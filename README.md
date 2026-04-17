@@ -1,6 +1,6 @@
 # Froggy RAG MCP
 
-A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Model Context Protocol) server and modern UI. This is a self-contained Electron application that provides a complete solution for document ingestion, vector storage, semantic search, optional live web search (Google Custom Search), and MCP server integration.
+A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Model Context Protocol) server and modern UI. This is a self-contained Electron application that provides a complete solution for document ingestion, vector storage, semantic search, and MCP server integration.
 
 ## Features
 
@@ -18,7 +18,6 @@ A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Mode
 
 ### 🔎 Search & Retrieval
 - **Semantic Search**: World-class matching based on input queries and vector store
-- **Optional Web Search**: When configured, Google Custom Search results are chunked and merged with vector-store hits so one query can rank local documents and the web together (UI toggle on the Search screen; `webSearch` on MCP/REST; `--web` in the CLI)
 - **MRU (Most Recently Used)**: Quick access to recent searches
 - **Chunk Inspection**: View content and metadata for retrieved chunks
 
@@ -35,7 +34,7 @@ A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Mode
   - **Vector Store**: View documents, chunks, and metadata
   - **Search**: Perform semantic searches with MRU support
   - **Server**: Control MCP server and view logs
-- **Persistent Settings**: Window state, splitter positions, and preferences are saved (including optional web search credentials under **Settings → Web Search**)
+- **Persistent Settings**: Window state, splitter positions, and preferences are saved
 
 ## Installation
 
@@ -100,8 +99,7 @@ froggy-nobs-mcp-rag/
 │   │       ├── mcp-service.js        # MCP server implementation
 │   │       ├── vector-store.js       # SQLite vector store
 │   │       ├── document-processor.js # Document parsing & chunking
-│   │       ├── search-service.js     # Semantic search
-│   │       └── web-search-service.js # Google Custom Search (optional)
+│   │       └── search-service.js     # Semantic search
 │   └── renderer/          # Electron renderer process (UI)
 │       ├── index.html     # Main HTML
 │       ├── app.js         # UI logic
@@ -141,7 +139,7 @@ The MCP server provides three interfaces for integration with external applicati
 ### REST API
 
 The REST server runs on a configurable port (default: 3000) and provides endpoints for:
-- Document search (optional `webSearch: true` in the body merges in Google Custom Search when configured in the app)
+- Corpus search over the vector store
 - Vector store operations
 - RAG queries
 
@@ -189,10 +187,7 @@ npm run mcp tools list
 # Call a tool with parameters
 npm run mcp call search --query "example query" --limit 5
 
-# Include web search in tool call (when Google Custom Search is configured)
-npm run mcp call search --query "example query" --limit 5 --webSearch true
-
-# Search directly (shortcut; add --web to include Google results when configured)
+# Search directly (shortcut for vector search)
 npm run mcp search "example query" --limit 10 --algorithm hybrid
 
 # Get statistics
@@ -208,7 +203,7 @@ npm run mcp help
 **Commands:**
 - `tools list` - List all available tools
 - `call <tool-name> [--arg key=value] ...` - Call a tool with parameters
-- `search <query> [--limit N] [--algorithm] [--web]` - Search the vector store (shortcut); `--web` merges Google Custom Search when configured
+- `search <query> [--limit N] [--algorithm]` - Search the vector store (shortcut)
 - `stats` - Get vector store statistics
 - `help` - Show help message
 
@@ -219,9 +214,6 @@ node src/cli/mcp-cli.js tools list
 
 # Search with hybrid algorithm
 node src/cli/mcp-cli.js search "machine learning" --limit 10 --algorithm hybrid
-
-# Same search, including web results (requires API key + CX in Settings → Web Search)
-node src/cli/mcp-cli.js search "machine learning" --limit 10 --algorithm hybrid --web
 
 # Get all documents
 node src/cli/mcp-cli.js call get_documents
@@ -236,7 +228,7 @@ node src/cli/mcp-cli.js call ingest_directory --dirPath "/path/to/docs" --recurs
 ### Available Tools
 
 All modes support the same set of tools:
-- `search` - Search the vector store for similar content; pass `webSearch: true` to merge Google Custom Search results when configured
+- `search` - Search the vector store for similar content
 - `get_documents` - Get all documents in the vector store
 - `get_document_chunks` - Get chunks for a specific document
 - `get_chunk` - Get chunk content by ID
@@ -267,7 +259,7 @@ All modes support the same set of tools:
 - **Main Process**: Handles file system operations, database access, and service orchestration
 - **Renderer Process**: UI rendering and user interaction
 - **IPC Communication**: Secure communication between main and renderer processes
-- **Service Layer**: Modular services for RAG, MCP, vector storage, search, and optional web search (Google Custom Search JSON API)
+- **Service Layer**: Modular services for RAG, MCP, vector storage, and search
 
 ## License
 

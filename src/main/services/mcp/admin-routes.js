@@ -288,24 +288,23 @@ function createAdminHandlers(ragService, log) {
       }
     },
 
-    /** Corpus search (optional web merge when a single corpus is targeted). */
+    /** Corpus search across the active or requested namespace. */
     async corpusSearch(req, res) {
       try {
         const body = req.body || {};
-        const { query, limit = 10, algorithm = 'hybrid', webSearch = false, filters } = body;
+        const { query, limit = 10, algorithm = 'hybrid', filters } = body;
         const namespace = req.query.namespace !== undefined ? req.query.namespace : body.namespace;
         if (!query) {
           return res.status(400).json({ error: 'query is required' });
         }
         const algo =
           filters && typeof filters === 'object' && filters.algorithm ? filters.algorithm : algorithm;
-        log('info', 'Admin corpus search', { query, limit, algorithm: algo, webSearch, namespace });
+        log('info', 'Admin corpus search', { query, limit, algorithm: algo, namespace });
         const out = await searchCorpusInNamespaces(ragService, {
           namespace,
           query,
           topK: Number(limit) || 10,
-          algorithm: algo,
-          webSearch: Boolean(webSearch)
+          algorithm: algo
         });
         res.json(mapSearchResults(out));
       } catch (error) {

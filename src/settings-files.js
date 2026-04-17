@@ -129,16 +129,7 @@ function getDefaultSettings() {
     retrievalReturnFullDocs: false,
     retrievalMaxContextTokens: 0,
     searchProfiling: false,
-    minimizeToTray: false,
-    webSearchEnabled: false,
-    webSearchApiKey: '',
-    webSearchCx: '',
-    webSearchMaxResults: 5,
-    webSearchSafeSearch: 'off',
-    webSearchTimeoutMs: 10000,
-    webSearchFetchPages: true,
-    webSearchFetchMaxBytes: 1048576,
-    webSearchPageFetchTimeoutMs: 8000
+    minimizeToTray: false
   };
 }
 

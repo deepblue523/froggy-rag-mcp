@@ -1,5 +1,5 @@
 /**
- * MCP tool definitions and execution, backed by RAGService / WebSearchService.
+ * MCP tool definitions and execution, backed by RAGService.
  */
 
 const {
@@ -17,7 +17,7 @@ const CHUNK_RESOURCE_SCHEME = 'froggy-rag-chunk';
 
 const TOOL_DEFINITIONS = [
   {
-    name: 'search_corpus',
+    name: 'search_vector_store',
     description:
       'Search the local vector store for relevant content. Optional namespace scopes one corpus; omitted uses the server default namespace when inferable, otherwise searches all corpora on disk.',
     inputSchema: {
@@ -27,18 +27,6 @@ const TOOL_DEFINITIONS = [
         topK: { type: 'integer', default: 5 },
         filters: { type: 'object' },
         namespace: { type: 'string', description: 'Corpus namespace (data/<name>/vector_store.db).' }
-      },
-      required: ['query']
-    }
-  },
-  {
-    name: 'web_search',
-    description: 'Search the web and return relevant results.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string' },
-        maxResults: { type: 'integer', default: 5 }
       },
       required: ['query']
     }
@@ -118,8 +106,7 @@ class MCPToolRegistry {
     this.log = log;
     /** @type {Record<string, (args: object) => Promise<{ result?: object, error?: object }>>} */
     this._handlers = {
-      search_corpus: (args) => this._searchCorpus(args),
-      web_search: (args) => this._webSearch(args),
+      search_vector_store: (args) => this._searchCorpus(args),
       get_document: (args) => this._getDocument(args),
       get_chunk: (args) => this._getChunk(args),
       list_documents: (args) => this._listDocuments(args),
@@ -166,8 +153,7 @@ class MCPToolRegistry {
         namespace: args.namespace,
         query: query.trim(),
         topK: Math.floor(topK),
-        algorithm,
-        webSearch: false
+        algorithm
       });
       return {
         result: textToolResult({
@@ -179,52 +165,6 @@ class MCPToolRegistry {
       };
     } catch (e) {
       return rpcError(-32602, 'Invalid params', e.message);
-    }
-  }
-
-  async _webSearch(args) {
-    const query = args.query;
-    if (typeof query !== 'string' || !query.trim()) {
-      return rpcError(-32602, 'Invalid params', 'query is required');
-    }
-    let maxResults = args.maxResults !== undefined ? Number(args.maxResults) : 5;
-    if (!Number.isFinite(maxResults) || maxResults < 1) {
-      return rpcError(-32602, 'Invalid params', 'maxResults must be a positive integer');
-    }
-    maxResults = Math.min(Math.floor(maxResults), 10);
-
-    const ws = this.ragService.webSearchService;
-    if (!ws.isAvailable()) {
-      return rpcError(
-        -32002,
-        'Web search unavailable',
-        'Configure Google Custom Search (API key and Search Engine ID) in app settings.'
-      );
-    }
-
-    const chunkSize = this.ragService.settings.chunkSize || 1000;
-    const chunkOverlap = this.ragService.settings.chunkOverlap || 200;
-
-    try {
-      const chunks = await ws.searchAndChunk(query.trim(), chunkSize, chunkOverlap, {
-        maxResults
-      });
-      return {
-        result: textToolResult({
-          query: query.trim(),
-          maxResults,
-          chunks: chunks.map((c) => ({
-            id: c.id,
-            document_id: c.document_id,
-            chunk_index: c.chunk_index,
-            content: c.content,
-            metadata: c.metadata
-          }))
-        })
-      };
-    } catch (err) {
-      this.log('error', 'web_search tool error', { error: err.message });
-      return rpcError(-32000, 'Web search failed', err.message);
     }
   }
 

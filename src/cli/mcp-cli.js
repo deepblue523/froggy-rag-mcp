@@ -194,7 +194,7 @@ async function callTool(mcpService, ragService, args) {
   const params = {};
 
   if (toolName === 'search') {
-    toolName = 'search_corpus';
+    toolName = 'search_vector_store';
   }
   if (toolName === 'get_documents') {
     toolName = 'list_documents';
@@ -284,8 +284,6 @@ async function callSearchTool(mcpService, args) {
       params.topK = parseInt(args[++i], 10);
     } else if (args[i] === '--algorithm' && i + 1 < args.length) {
       params.algorithm = args[++i];
-    } else if (args[i] === '--web') {
-      params.webSearch = true;
     }
   }
 
@@ -295,15 +293,7 @@ async function callSearchTool(mcpService, args) {
     params.filters = { ...(params.filters || {}), algorithm };
   }
 
-  if (params.webSearch) {
-    const { webSearch, ...rest } = params;
-    void webSearch;
-    const result = await mcpService.callTool('web_search', { query: rest.query, maxResults: rest.topK || 5 });
-    console.log(JSON.stringify(result, null, 2));
-    return;
-  }
-
-  const result = await mcpService.callTool('search_corpus', params);
+  const result = await mcpService.callTool('search_vector_store', params);
   console.log(JSON.stringify(result, null, 2));
 }
 
@@ -336,7 +326,7 @@ Examples:
 Commands:
   tools list                                  # List all available tools
   call <tool-name> [--arg key=value] ...     # Call a tool with parameters
-  search <query> [--limit N] [--algorithm] [--web]  # Search (--web adds Google results)
+  search <query> [--limit N] [--algorithm]           # Vector search (search_vector_store)
   stats                                       # Get vector store statistics
   help                                        # Show this help message
 
@@ -344,10 +334,10 @@ More examples:
   # List all tools
   node src/cli/mcp-cli.js tools list
 
-  # Call vector search (MCP tool search_corpus)
-  node src/cli/mcp-cli.js call search_corpus --query "example query" --topK 5
+  # Call vector search (MCP tool search_vector_store)
+  node src/cli/mcp-cli.js call search_vector_store --query "example query" --topK 5
 
-  # Shorthand: call search maps to search_corpus; --web uses web_search tool
+  # Shorthand: call search maps to search_vector_store
   node src/cli/mcp-cli.js call search --query "example query" --topK 5
 
   # Search directly

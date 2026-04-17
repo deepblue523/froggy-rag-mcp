@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
@@ -7,7 +7,7 @@ const fs = require('fs');
 const packageJson = require('../../package.json');
 const appVersion = packageJson.version;
 const paths = require('../paths');
-const { readJsonObject, patchAppSettings } = require('../settings-files');
+const { readJsonObject, patchAppSettings, readMergedSettingsFromDisk } = require('../settings-files');
 
 paths.ensureUserDataLayout();
 let currentNamespaceName = paths.resolveInitialNamespaceName();
@@ -20,6 +20,9 @@ let dataDir = paths.getDataDirForNamespace(currentNamespaceName);
 }
 
 let mainWindow;
+/** True after `before-quit` so window `close` can proceed (tray quit, app menu exit, etc.). */
+let isAppQuitting = false;
+let tray = null;
 let mcpServer = null;
 let ragService = null;
 let mcpService = null;
@@ -158,6 +161,97 @@ async function switchNamespace(name) {
   return { namespace: name, dataDir };
 }
 
+function getMinimizeToTraySetting() {
+  try {
+    const s = readMergedSettingsFromDisk(dataDir, paths.getAppSettingsPath());
+    return Boolean(s.minimizeToTray);
+  } catch (error) {
+    console.error('Error reading minimize-to-tray setting:', error);
+    return false;
+  }
+}
+
+function destroyTray() {
+  if (!tray) return;
+  try {
+    tray.destroy();
+  } catch (_) {
+    /* already destroyed */
+  }
+  tray = null;
+}
+
+function getTrayIconImage() {
+  const iconPath = path.join(__dirname, '..', 'renderer', 'images', 'Froggy RAG x32.png');
+  const image = nativeImage.createFromPath(iconPath);
+  if (image.isEmpty()) {
+    return nativeImage.createEmpty();
+  }
+  if (process.platform === 'win32') {
+    return image.resize({ width: 16, height: 16 });
+  }
+  return image;
+}
+
+function showMainWindowFromTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (process.platform === 'win32' || process.platform === 'linux') {
+    mainWindow.setSkipTaskbar(false);
+  }
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  mainWindow.focus();
+  if (!getMinimizeToTraySetting()) {
+    destroyTray();
+  }
+}
+
+function buildTrayMenu() {
+  return Menu.buildFromTemplate([
+    {
+      label: 'Show Froggy RAG MCP',
+      click: () => showMainWindowFromTray()
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => app.quit()
+    }
+  ]);
+}
+
+function ensureTray() {
+  if (tray) {
+    try {
+      tray.setContextMenu(buildTrayMenu());
+      return;
+    } catch (_) {
+      tray = null;
+    }
+  }
+  const icon = getTrayIconImage();
+  if (icon.isEmpty()) {
+    console.warn('Tray icon missing; tray not created.');
+    return;
+  }
+  tray = new Tray(icon);
+  tray.setToolTip(`Froggy RAG MCP (v${appVersion})`);
+  tray.setContextMenu(buildTrayMenu());
+  tray.on('click', () => {
+    showMainWindowFromTray();
+  });
+}
+
+function hideWindowToTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  ensureTray();
+  if (process.platform === 'win32' || process.platform === 'linux') {
+    mainWindow.setSkipTaskbar(true);
+  }
+  mainWindow.hide();
+}
+
 function createWindow() {
   // Get saved window state or use defaults
   const savedState = getWindowState();
@@ -189,6 +283,12 @@ function createWindow() {
     }
   });
 
+  mainWindow.on('show', () => {
+    if (!getMinimizeToTraySetting()) {
+      destroyTray();
+    }
+  });
+
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
   mainWindow.webContents.once('did-finish-load', () => {
@@ -207,9 +307,26 @@ function createWindow() {
   mainWindow.on('moved', debouncedSave);
   mainWindow.on('resized', debouncedSave);
 
-  // Save state when window is closed
-  mainWindow.on('close', () => {
+  mainWindow.on('minimize', () => {
+    if (!getMinimizeToTraySetting()) return;
+    setImmediate(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+      hideWindowToTray();
+    });
+  });
+
+  // Save state when window is closed; optionally hide to tray instead of exiting
+  mainWindow.on('close', (e) => {
     saveWindowState();
+    if (isAppQuitting || !getMinimizeToTraySetting()) {
+      destroyTray();
+      return;
+    }
+    e.preventDefault();
+    hideWindowToTray();
   });
 
   // Open DevTools in development
@@ -331,6 +448,11 @@ ipcMain.handle('install-update', async () => {
   return { success: false, error: 'Updates only available in production builds' };
 });
 
+app.on('before-quit', () => {
+  isAppQuitting = true;
+  destroyTray();
+});
+
 app.whenReady().then(() => {
   registerAutoUpdaterListeners();
 
@@ -350,6 +472,8 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
+    } else if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      showMainWindowFromTray();
     }
   });
 });
@@ -361,6 +485,12 @@ app.on('window-all-closed', () => {
 });
 
 // IPC handlers
+ipcMain.on('tray-settings-changed', () => {
+  if (!getMinimizeToTraySetting()) {
+    destroyTray();
+  }
+});
+
 ipcMain.handle('get-data-dir', () => dataDir);
 ipcMain.handle('get-app-version', () => appVersion);
 

@@ -5,10 +5,9 @@
 # 1. GET  {{base}}/health  → 200, { "status": "ok", ... }
 # 2. POST {{base}}/mcp     → initialize (below) → result with protocolVersion, serverInfo, instructions
 # 3. POST {{base}}/mcp     → notifications/initialized → 204 No Content
-# 4. POST {{base}}/mcp     → tools/list → result.tools includes search_corpus, web_search, …
-# 5. POST {{base}}/mcp     → tools/call search_corpus (below) → result.content[0].text JSON
+# 4. POST {{base}}/mcp     → tools/list → result.tools includes search_vector_store, …
+# 5. POST {{base}}/mcp     → tools/call search_vector_store (below) → result.content[0].text JSON
 # 6. POST {{base}}/mcp     → tools/call list_namespaces → namespaces + activeNamespace
-# 7. POST {{base}}/mcp     → tools/call web_search (below) → needs Google CSE in app settings
 # Admin REST (not MCP): same paths under /admin and /store. Optional query: ?namespace=<corpusName>
 
 @base = http://localhost:3000
@@ -55,7 +54,7 @@ Content-Type: application/json
   "id": 2
 }
 
-### JSON-RPC: tools/call — search_corpus
+### JSON-RPC: tools/call — search_vector_store
 POST {{base}}/mcp
 Content-Type: application/json
 
@@ -63,7 +62,7 @@ Content-Type: application/json
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "search_corpus",
+    "name": "search_vector_store",
     "arguments": {
       "query": "example",
       "topK": 5,
@@ -73,7 +72,7 @@ Content-Type: application/json
   "id": 3
 }
 
-### JSON-RPC: tools/call — search_corpus (scoped to one namespace)
+### JSON-RPC: tools/call — search_vector_store (scoped to one namespace)
 POST {{base}}/mcp
 Content-Type: application/json
 
@@ -81,7 +80,7 @@ Content-Type: application/json
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "search_corpus",
+    "name": "search_vector_store",
     "arguments": {
       "query": "example",
       "topK": 5,
@@ -101,20 +100,6 @@ Content-Type: application/json
   "method": "tools/call",
   "params": { "name": "list_namespaces", "arguments": {} },
   "id": 3n
-}
-
-### JSON-RPC: tools/call — web_search (requires Google CSE configured in app)
-POST {{base}}/mcp
-Content-Type: application/json
-
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "web_search",
-    "arguments": { "query": "Model Context Protocol", "maxResults": 3 }
-  },
-  "id": 4
 }
 
 ### JSON-RPC: resources/list (optional; not advertised in initialize.capabilities)
@@ -145,6 +130,5 @@ Content-Type: application/json
   "query": "example",
   "limit": 5,
   "algorithm": "hybrid",
-  "webSearch": false,
   "namespace": "general"
 }

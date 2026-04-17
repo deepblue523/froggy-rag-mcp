@@ -14,7 +14,7 @@ const {
 const DEFAULT_PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'froggy-rag-mcp';
 const INSTRUCTIONS =
-  'Use search_corpus for vector search (optional namespace) and web_search for web results. Use list_namespaces to discover corpora; omit namespace to use the server default or search all when no default is inferred.';
+  'Use search_vector_store for vector search (optional namespace). Use list_namespaces to discover corpora; omit namespace to use the server default or search all when no default is inferred.';
 
 function readPackageVersion() {
   try {

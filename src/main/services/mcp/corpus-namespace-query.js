@@ -28,13 +28,12 @@ function mapSearchHit(r, namespace) {
 
 /**
  * @param {import('../rag-service')} ragService
- * @param {{ namespace?: unknown, query: string, topK: number, algorithm: string, webSearch?: boolean }} opts
+ * @param {{ namespace?: unknown, query: string, topK: number, algorithm: string }} opts
  */
 async function searchCorpusInNamespaces(ragService, opts) {
   const query = opts.query;
   const topK = opts.topK;
   const algorithm = opts.algorithm;
-  const webSearch = Boolean(opts.webSearch);
 
   const resolved = resolveCorpusNamespaces(ragService, opts.namespace);
   const lim = Math.floor(topK);
@@ -55,12 +54,11 @@ async function searchCorpusInNamespaces(ragService, opts) {
   const merged = [];
   const warnings = [];
   const errors = [];
-  const single = resolved.mode === 'single';
 
   for (const ns of resolved.namespaces) {
     const dir = paths.getDataDirForNamespace(ns);
     const useP = resolved.usePrimaryForNamespace(ns);
-    const searchOpts = { webSearch: single && webSearch };
+    const searchOpts = {};
     /** @type {VectorStore | null} */
     let vs = null;
     if (!useP) {
@@ -82,11 +80,6 @@ async function searchCorpusInNamespaces(ragService, opts) {
   if (resolved.mode === 'all') {
     merged.sort((a, b) => (b.score || 0) - (a.score || 0));
     const sliced = merged.slice(0, lim);
-    if (webSearch) {
-      warnings.push(
-        'webSearch was ignored because multiple namespaces were searched; pass a single namespace to enable web results.'
-      );
-    }
     return {
       results: sliced,
       warnings,

@@ -48,8 +48,6 @@ async function reloadNamespaceContext() {
   await loadServerSettings();
   await loadMetadataFilteringSettings();
   await checkAndAutoStartServer();
-  const reloadedSettings = await window.electronAPI.getSettings();
-  initWebSearchCheckbox(reloadedSettings);
 }
 
 function openNamespacesModal() {
@@ -333,9 +331,6 @@ async function initializeApp() {
     updateMRUList();
   }
 
-  // Initialize web search checkbox
-  initWebSearchCheckbox(settings);
-
   // Setup splitters
   setupSplitter();
   setupSearchSplitter();
@@ -533,19 +528,6 @@ function setupEventListeners() {
   document.getElementById('self-test-btn').addEventListener('click', async () => {
     await performSelfTest();
   });
-
-  // Toggle API key visibility
-  const toggleApiKeyBtn = document.getElementById('toggle-api-key-visibility-btn');
-  if (toggleApiKeyBtn) {
-    toggleApiKeyBtn.addEventListener('click', () => {
-      const apiKeyInput = document.getElementById('settings-web-search-api-key-input');
-      if (apiKeyInput) {
-        const isPassword = apiKeyInput.type === 'password';
-        apiKeyInput.type = isPassword ? 'text' : 'password';
-        toggleApiKeyBtn.textContent = isPassword ? 'Hide' : 'Show';
-      }
-    });
-  }
 
   // Settings page navigation
   setupSettingsNavigation();
@@ -1476,24 +1458,6 @@ function escapeSearchHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
-function initWebSearchCheckbox(settings) {
-  const checkbox = document.getElementById('web-search-enabled');
-  const status = document.getElementById('web-search-status');
-  if (!checkbox || !status) return;
-
-  const configured = settings.webSearchEnabled && settings.webSearchApiKey && settings.webSearchCx;
-  if (!configured) {
-    checkbox.disabled = true;
-    checkbox.checked = false;
-    status.textContent = '(configure in Settings > Web Search)';
-    status.style.color = '#999';
-  } else {
-    checkbox.disabled = false;
-    checkbox.checked = true;
-    status.textContent = '';
-  }
-}
-
 async function performSearch() {
   const query = document.getElementById('search-input').value.trim();
   if (!query) return;
@@ -1571,9 +1535,7 @@ async function performSearch() {
       return;
     }
     
-    const webSearchCheckbox = document.getElementById('web-search-enabled');
-    const webSearchEnabled = webSearchCheckbox ? webSearchCheckbox.checked : false;
-    const searchPayload = await window.electronAPI.search(query, 10, algorithm, { webSearch: webSearchEnabled });
+    const searchPayload = await window.electronAPI.search(query, 10, algorithm);
     const results = searchPayload && Array.isArray(searchPayload.results) ? searchPayload.results : [];
     const searchWarnings = (searchPayload && searchPayload.warnings) || [];
     const searchErrors = (searchPayload && searchPayload.errors) || [];
@@ -1978,7 +1940,7 @@ async function refreshServerStatus() {
       { method: 'GET', path: '/mcp', description: 'MCP endpoint metadata (use POST for JSON-RPC)', requiresPayload: false, requiresParams: false },
       { method: 'POST', path: '/mcp', description: 'MCP protocol — JSON-RPC 2.0 (initialize, tools/list, tools/call, …)', requiresPayload: true, requiresParams: false },
       { method: 'GET', path: '/admin/stats', description: 'Vector store statistics (?namespace= for a specific corpus)', requiresPayload: false, requiresParams: false },
-      { method: 'POST', path: '/admin/corpus-search', description: 'Search corpus (body: query, optional namespace, webSearch)', requiresPayload: true, requiresParams: false },
+      { method: 'POST', path: '/admin/corpus-search', description: 'Search corpus (body: query, optional namespace)', requiresPayload: true, requiresParams: false },
       { method: 'GET', path: '/admin/documents', description: 'List documents (?namespace= scopes one corpus)', requiresPayload: false, requiresParams: false },
       { method: 'GET', path: '/admin/documents/:documentId', description: 'Get document by ID (?namespace= if ambiguous)', requiresPayload: false, requiresParams: true, params: [{ name: 'documentId', label: 'Document ID', type: 'text' }] },
       { method: 'GET', path: '/admin/documents/:documentId/chunks', description: 'Chunks for document (?namespace= if ambiguous)', requiresPayload: false, requiresParams: true, params: [{ name: 'documentId', label: 'Document ID', type: 'text' }] },
@@ -2268,6 +2230,7 @@ async function saveSettings() {
   settings.vectorStoreSplitterPosition = vectorStoreSplitterPosition;
   settings.mruSearches = mruSearches;
   await window.electronAPI.saveSettings(settings);
+  window.electronAPI.notifyTraySettingsChanged();
 }
 
 async function loadServerSettings() {
@@ -2405,68 +2368,6 @@ function applyAllSettingsModalFieldsToSettings(settings) {
   settings.serverPort = serverPort;
   settings.autoStartServer = autoStartServer;
 
-  const enabledInput = document.getElementById('settings-web-search-enabled-input');
-  const apiKeyInput = document.getElementById('settings-web-search-api-key-input');
-  const cxInput = document.getElementById('settings-web-search-cx-input');
-  const maxResultsInput = document.getElementById('settings-web-search-max-results-input');
-  const timeoutSecondsInput = document.getElementById('settings-web-search-timeout-seconds-input');
-  const safeSearchInput = document.getElementById('settings-web-search-safe-search-input');
-  const fetchPagesInput = document.getElementById('settings-web-search-fetch-pages-input');
-  const fetchMaxMbInput = document.getElementById('settings-web-search-fetch-max-mb-input');
-  const pageTimeoutSecondsInput = document.getElementById('settings-web-search-page-timeout-seconds-input');
-  if (
-    !enabledInput ||
-    !apiKeyInput ||
-    !cxInput ||
-    !maxResultsInput ||
-    !timeoutSecondsInput ||
-    !safeSearchInput ||
-    !fetchPagesInput ||
-    !fetchMaxMbInput ||
-    !pageTimeoutSecondsInput
-  ) {
-    return { ok: false, message: 'Settings form is missing web search fields.' };
-  }
-  const webEnabled = enabledInput.checked || false;
-  const apiKey = apiKeyInput.value?.trim() || '';
-  const cx = cxInput.value?.trim() || '';
-  const maxResults = parseInt(maxResultsInput.value, 10) || 5;
-  const timeoutSeconds = parseInt(timeoutSecondsInput.value, 10);
-  const safeSearch = safeSearchInput.value || 'off';
-  if (webEnabled && !apiKey) {
-    return { ok: false, message: 'API Key is required when Web Search is enabled.' };
-  }
-  if (webEnabled && !cx) {
-    return { ok: false, message: 'Search Engine ID (CX) is required when Web Search is enabled.' };
-  }
-  if (maxResults < 1 || maxResults > 10) {
-    return { ok: false, message: 'Max results must be between 1 and 10.' };
-  }
-  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 0 || timeoutSeconds > 120) {
-    return { ok: false, message: 'Web search timeout must be between 0 and 120 seconds (0 = no limit).' };
-  }
-  const fetchMaxMb = parseFloat(fetchMaxMbInput.value);
-  if (!Number.isFinite(fetchMaxMb) || fetchMaxMb < 0.25 || fetchMaxMb > 10) {
-    return { ok: false, message: 'Max page size must be between 0.25 and 10 MB.' };
-  }
-  const pageTimeoutSeconds = parseInt(pageTimeoutSecondsInput.value, 10);
-  if (!Number.isFinite(pageTimeoutSeconds) || pageTimeoutSeconds < 0 || pageTimeoutSeconds > 120) {
-    return { ok: false, message: 'Per-page timeout must be between 0 and 120 seconds (0 = no limit).' };
-  }
-  settings.webSearchEnabled = webEnabled;
-  settings.webSearchApiKey = apiKey;
-  settings.webSearchCx = cx;
-  settings.webSearchMaxResults = maxResults;
-  settings.webSearchSafeSearch = safeSearch;
-  settings.webSearchTimeoutMs = timeoutSeconds <= 0 ? 0 : Math.round(timeoutSeconds * 1000);
-  settings.webSearchFetchPages = fetchPagesInput.checked;
-  settings.webSearchFetchMaxBytes = Math.min(
-    Math.max(Math.round(fetchMaxMb * 1048576), 4096),
-    10 * 1024 * 1024
-  );
-  settings.webSearchPageFetchTimeoutMs =
-    pageTimeoutSeconds <= 0 ? 0 : Math.round(pageTimeoutSeconds * 1000);
-
   return { ok: true };
 }
 
@@ -2479,7 +2380,7 @@ async function persistSettingsModal() {
       return false;
     }
     await window.electronAPI.saveSettings(settings);
-    initWebSearchCheckbox(await window.electronAPI.getSettings());
+    window.electronAPI.notifyTraySettingsChanged();
     return true;
   } catch (e) {
     console.error('persistSettingsModal', e);
@@ -2493,67 +2394,6 @@ async function loadGeneralSettings() {
   const input = document.getElementById('settings-minimize-to-tray-input');
   if (input) {
     input.checked = settings.minimizeToTray || false;
-  }
-}
-
-async function loadWebSearchSettings() {
-  const settings = await window.electronAPI.getSettings();
-  
-  const enabledInput = document.getElementById('settings-web-search-enabled-input');
-  if (enabledInput) {
-    enabledInput.checked = settings.webSearchEnabled || false;
-  }
-  
-  const apiKeyInput = document.getElementById('settings-web-search-api-key-input');
-  if (apiKeyInput) {
-    apiKeyInput.value = settings.webSearchApiKey || '';
-    apiKeyInput.type = 'password';
-  }
-  
-  const toggleBtn = document.getElementById('toggle-api-key-visibility-btn');
-  if (toggleBtn) {
-    toggleBtn.textContent = 'Show';
-  }
-  
-  const cxInput = document.getElementById('settings-web-search-cx-input');
-  if (cxInput) {
-    cxInput.value = settings.webSearchCx || '';
-  }
-  
-  const maxResultsInput = document.getElementById('settings-web-search-max-results-input');
-  if (maxResultsInput) {
-    maxResultsInput.value = settings.webSearchMaxResults || 5;
-  }
-  
-  const timeoutSecondsInput = document.getElementById('settings-web-search-timeout-seconds-input');
-  if (timeoutSecondsInput) {
-    const ms = settings.webSearchTimeoutMs;
-    const sec = Number.isFinite(ms) && ms > 0 ? Math.round(ms / 1000) : 0;
-    timeoutSecondsInput.value = sec;
-  }
-
-  const safeSearchInput = document.getElementById('settings-web-search-safe-search-input');
-  if (safeSearchInput) {
-    safeSearchInput.value = settings.webSearchSafeSearch || 'off';
-  }
-
-  const fetchPagesInput = document.getElementById('settings-web-search-fetch-pages-input');
-  if (fetchPagesInput) {
-    fetchPagesInput.checked = settings.webSearchFetchPages !== false;
-  }
-
-  const fetchMaxMbInput = document.getElementById('settings-web-search-fetch-max-mb-input');
-  if (fetchMaxMbInput) {
-    const b = Number(settings.webSearchFetchMaxBytes) || 1048576;
-    const mb = Math.round((b / 1048576) * 1000) / 1000;
-    fetchMaxMbInput.value = String(Math.min(10, Math.max(0.25, mb || 1)));
-  }
-
-  const pageTimeoutSecondsInput = document.getElementById('settings-web-search-page-timeout-seconds-input');
-  if (pageTimeoutSecondsInput) {
-    const ms = Number(settings.webSearchPageFetchTimeoutMs);
-    const sec = Number.isFinite(ms) && ms > 0 ? Math.round(ms / 1000) : 0;
-    pageTimeoutSecondsInput.value = sec;
   }
 }
 
@@ -2819,12 +2659,13 @@ async function saveEndpointTestPayload(endpointPath, payload, params) {
     params: params
   };
   await window.electronAPI.saveSettings(settings);
+  window.electronAPI.notifyTraySettingsChanged();
 }
 
 async function getDefaultPayload(endpointPath) {
   let defaultPayload = {};
   if (endpointPath === '/admin/corpus-search') {
-    defaultPayload = { query: 'test query', limit: 10, algorithm: 'hybrid', webSearch: false };
+    defaultPayload = { query: 'test query', limit: 10, algorithm: 'hybrid' };
   } else if (endpointPath === '/admin/ingest/file') {
     defaultPayload = { filePath: '', watch: false };
   } else if (endpointPath === '/admin/ingest/directory') {
@@ -3234,7 +3075,6 @@ async function showSettingsModal() {
   await loadMetadataFilteringSettings();
   await loadGeneralSettings();
   await loadServerSettings();
-  await loadWebSearchSettings();
   await loadUpdatesSettingsPanel();
 
   // Clean up previous event handlers
