@@ -3,7 +3,8 @@
 /**
  * Full release: bump semver, commit, tag, Windows build (electron-builder → dist/), publish GitHub release artifacts, push.
  *
- * Windows installer is configured as MSI in package.json (not .exe); output still lands under dist/.
+ * Windows targets include NSIS (.exe) and MSI (.msi). electron-updater requires the NSIS .exe on GitHub; this script
+ * relies on npm postbuild:publish (assert-dist-win-exe.js) so dist/ contains a .exe after build:publish.
  *
  * Usage:
  *   node scripts/release.js [patch|minor|major] [options]
@@ -159,7 +160,7 @@ run('git', ['add', 'package.json', 'package-lock.json'], { dryRun, label: 'Stage
 run('git', ['commit', '-m', `chore: release ${tag}`], { dryRun, label: 'Commit' });
 run('git', ['tag', tag], { dryRun, label: 'Tag' });
 
-npm(['run', 'build:publish'], { dryRun, label: 'Build Windows installer and publish to GitHub' });
+npm(['run', 'build:publish'], { dryRun, label: 'Build Windows installers and publish to GitHub' });
 
 if (withSourceDist) {
   run(process.execPath, [path.join(projectRoot, 'scripts', 'create-dist.js')], {

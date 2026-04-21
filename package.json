@@ -12,6 +12,7 @@
     "build": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win",
     "build:all": "electron-builder",
     "build:publish": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --publish always",
+    "postbuild:publish": "node scripts/assert-dist-win-exe.js",
     "version:patch": "node scripts/bump-version.js patch",
     "version:minor": "node scripts/bump-version.js minor",
     "version:major": "node scripts/bump-version.js major",
@@ -72,6 +73,12 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "signingHashAlgorithms": [],
@@ -106,6 +113,11 @@
       "menuCategory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
+      "warningsAsErrors": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
       "warningsAsErrors": false
     }
   }

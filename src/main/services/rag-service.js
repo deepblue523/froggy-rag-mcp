@@ -9,6 +9,7 @@ const { DocumentProcessor } = require('./document-processor');
 const { SearchService } = require('./search-service');
 const { getAppSettingsPath } = require('../../paths');
 const { splitSettingsForPersist, writeAppAndNamespace, readMergedSettingsFromDisk } = require('../../settings-files');
+const { createLlmChunkAdvisor } = require('./llm-chunk-advisor');
 
 /** Compare two paths for equality (case-insensitive on Windows). */
 function pathsEqual(a, b) {
@@ -133,6 +134,7 @@ class RAGService extends EventEmitter {
     const minChunkChars = this.settings.minChunkChars || 0;
     const minChunkTokens = this.settings.minChunkTokens || 0;
     const maxChunksPerDocument = this.settings.maxChunksPerDocument || 0;
+    const llmAdvisor = createLlmChunkAdvisor(this.settings);
     const chunks = await this.documentProcessor.chunkContent(
       content,
       metadata,
@@ -140,7 +142,18 @@ class RAGService extends EventEmitter {
       chunkOverlap,
       minChunkChars,
       minChunkTokens,
-      maxChunksPerDocument
+      maxChunksPerDocument,
+      {
+        intelligentChunking: this.settings.intelligentChunking !== false,
+        hierarchicalChunking: this.settings.hierarchicalChunking !== false,
+        hierarchicalCoarseWindowParts: this.settings.hierarchicalCoarseWindowParts,
+        chunkingWholeDocMaxRatio:
+          this.settings.chunkingWholeDocMaxRatio != null
+            ? this.settings.chunkingWholeDocMaxRatio
+            : undefined,
+        llmAdvisor,
+        chunkingLlmParagraphSeams: this.settings.chunkingLlmParagraphSeams === true
+      }
     );
     vectorStore.addDocument({
       id: fileId,
@@ -807,7 +820,8 @@ class RAGService extends EventEmitter {
     const groupByDoc = this.settings.retrievalGroupByDoc || false;
     const returnFullDocs = this.settings.retrievalReturnFullDocs || false;
     const maxContextTokens = this.settings.retrievalMaxContextTokens || 0;
-    
+    const dedupeChunkGroups = this.settings.retrievalDedupeChunkGroups !== false;
+
     // Get metadata settings from settings
     const sinceDays = this.settings.metadataSinceDays || 0;
     const timeDecayEnabled = this.settings.metadataTimeDecayEnabled || false;
@@ -876,7 +890,8 @@ class RAGService extends EventEmitter {
         maxChunksPerDoc,
         groupByDoc,
         returnFullDocs,
-        maxContextTokens
+        maxContextTokens,
+        dedupeChunkGroups
       },
       {
         sinceDays,

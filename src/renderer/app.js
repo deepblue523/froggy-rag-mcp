@@ -2297,6 +2297,55 @@ function applyAllSettingsModalFieldsToSettings(settings) {
   settings.embeddingModel = embeddingModel;
   settings.normalizeEmbeddings = normalizeEmbeddings;
 
+  const intelligentChunkingInput = document.getElementById('settings-intelligent-chunking-input');
+  const hierarchicalChunkingInput = document.getElementById('settings-hierarchical-chunking-input');
+  const hierarchicalPartsInput = document.getElementById('settings-hierarchical-coarse-window-input');
+  const wholeDocRatioInput = document.getElementById('settings-chunking-whole-doc-ratio-input');
+  const chunkingLlmEnabledInput = document.getElementById('settings-chunking-llm-enabled-input');
+  const chunkingLlmBaseUrlInput = document.getElementById('settings-chunking-llm-base-url-input');
+  const chunkingLlmModelInput = document.getElementById('settings-chunking-llm-model-input');
+  const chunkingLlmApiKeyInput = document.getElementById('settings-chunking-llm-api-key-input');
+  const chunkingLlmTimeoutInput = document.getElementById('settings-chunking-llm-timeout-input');
+  const chunkingLlmParagraphSeamsInput = document.getElementById('settings-chunking-llm-paragraph-seams-input');
+  if (
+    !intelligentChunkingInput ||
+    !hierarchicalChunkingInput ||
+    !hierarchicalPartsInput ||
+    !wholeDocRatioInput ||
+    !chunkingLlmEnabledInput ||
+    !chunkingLlmBaseUrlInput ||
+    !chunkingLlmModelInput ||
+    !chunkingLlmTimeoutInput ||
+    !chunkingLlmParagraphSeamsInput
+  ) {
+    return { ok: false, message: 'Settings form is missing smart chunking / LLM fields.' };
+  }
+  const hierarchicalCoarseWindowParts = parseInt(hierarchicalPartsInput.value, 10) || 3;
+  const chunkingWholeDocMaxRatio = parseFloat(wholeDocRatioInput.value) || 1.15;
+  const chunkingLlmTimeoutMs = parseInt(chunkingLlmTimeoutInput.value, 10) || 45000;
+  if (hierarchicalCoarseWindowParts < 2 || hierarchicalCoarseWindowParts > 20) {
+    return { ok: false, message: 'Coarse window must be between 2 and 20' };
+  }
+  if (chunkingWholeDocMaxRatio < 1 || chunkingWholeDocMaxRatio > 2.5) {
+    return { ok: false, message: 'Whole-doc ratio must be between 1 and 2.5' };
+  }
+  if (chunkingLlmTimeoutMs < 5000 || chunkingLlmTimeoutMs > 600000) {
+    return { ok: false, message: 'Chunking LLM timeout must be between 5000 and 600000 ms' };
+  }
+  settings.intelligentChunking = intelligentChunkingInput.checked;
+  settings.hierarchicalChunking = hierarchicalChunkingInput.checked;
+  settings.hierarchicalCoarseWindowParts = hierarchicalCoarseWindowParts;
+  settings.chunkingWholeDocMaxRatio = chunkingWholeDocMaxRatio;
+  settings.chunkingLlmEnabled = chunkingLlmEnabledInput.checked;
+  settings.chunkingLlmBaseUrl = String(chunkingLlmBaseUrlInput.value || '').trim();
+  settings.chunkingLlmModel = String(chunkingLlmModelInput.value || '').trim();
+  const newApiKey = chunkingLlmApiKeyInput ? String(chunkingLlmApiKeyInput.value || '').trim() : '';
+  if (newApiKey !== '') {
+    settings.chunkingLlmApiKey = newApiKey;
+  }
+  settings.chunkingLlmTimeoutMs = chunkingLlmTimeoutMs;
+  settings.chunkingLlmParagraphSeams = chunkingLlmParagraphSeamsInput.checked;
+
   const topKInput = document.getElementById('settings-top-k-input');
   const scoreThresholdInput = document.getElementById('settings-score-threshold-input');
   const maxChunksPerDocInput = document.getElementById('settings-max-chunks-per-doc-input');
@@ -2330,6 +2379,12 @@ function applyAllSettingsModalFieldsToSettings(settings) {
   settings.retrievalGroupByDoc = groupByDoc;
   settings.retrievalReturnFullDocs = returnFullDocs;
   settings.retrievalMaxContextTokens = maxContextTokens;
+
+  const dedupeChunkGroupsInput = document.getElementById('settings-retrieval-dedupe-chunk-groups-input');
+  if (!dedupeChunkGroupsInput) {
+    return { ok: false, message: 'Settings form is missing hierarchical dedupe field.' };
+  }
+  settings.retrievalDedupeChunkGroups = dedupeChunkGroupsInput.checked;
 
   const sinceDaysInput = document.getElementById('settings-since-days-input');
   const timeDecayEnabledInput = document.getElementById('settings-time-decay-enabled-input');
@@ -2479,6 +2534,50 @@ async function loadChunkingSettings() {
   if (normalizeEmbeddingsInput) {
     normalizeEmbeddingsInput.checked = settings.normalizeEmbeddings !== false; // Default to true
   }
+
+  const intelligentChunkingInput = document.getElementById('settings-intelligent-chunking-input');
+  if (intelligentChunkingInput) {
+    intelligentChunkingInput.checked = settings.intelligentChunking !== false;
+  }
+  const hierarchicalChunkingInput = document.getElementById('settings-hierarchical-chunking-input');
+  if (hierarchicalChunkingInput) {
+    hierarchicalChunkingInput.checked = settings.hierarchicalChunking !== false;
+  }
+  const hierarchicalPartsInput = document.getElementById('settings-hierarchical-coarse-window-input');
+  if (hierarchicalPartsInput) {
+    hierarchicalPartsInput.value =
+      settings.hierarchicalCoarseWindowParts != null ? settings.hierarchicalCoarseWindowParts : 3;
+  }
+  const wholeDocRatioInput = document.getElementById('settings-chunking-whole-doc-ratio-input');
+  if (wholeDocRatioInput) {
+    wholeDocRatioInput.value =
+      settings.chunkingWholeDocMaxRatio != null ? settings.chunkingWholeDocMaxRatio : 1.15;
+  }
+  const chunkingLlmEnabledInput = document.getElementById('settings-chunking-llm-enabled-input');
+  if (chunkingLlmEnabledInput) {
+    chunkingLlmEnabledInput.checked = settings.chunkingLlmEnabled === true;
+  }
+  const chunkingLlmBaseUrlInput = document.getElementById('settings-chunking-llm-base-url-input');
+  if (chunkingLlmBaseUrlInput) {
+    chunkingLlmBaseUrlInput.value = settings.chunkingLlmBaseUrl || '';
+  }
+  const chunkingLlmModelInput = document.getElementById('settings-chunking-llm-model-input');
+  if (chunkingLlmModelInput) {
+    chunkingLlmModelInput.value = settings.chunkingLlmModel || '';
+  }
+  const chunkingLlmApiKeyInput = document.getElementById('settings-chunking-llm-api-key-input');
+  if (chunkingLlmApiKeyInput) {
+    chunkingLlmApiKeyInput.value = '';
+  }
+  const chunkingLlmTimeoutInput = document.getElementById('settings-chunking-llm-timeout-input');
+  if (chunkingLlmTimeoutInput) {
+    chunkingLlmTimeoutInput.value =
+      settings.chunkingLlmTimeoutMs != null ? settings.chunkingLlmTimeoutMs : 45000;
+  }
+  const chunkingLlmParagraphSeamsInput = document.getElementById('settings-chunking-llm-paragraph-seams-input');
+  if (chunkingLlmParagraphSeamsInput) {
+    chunkingLlmParagraphSeamsInput.checked = settings.chunkingLlmParagraphSeams === true;
+  }
 }
 
 async function loadRetrievalSettings() {
@@ -2518,6 +2617,11 @@ async function loadRetrievalSettings() {
   const maxContextTokensInput = document.getElementById('settings-max-context-tokens-input');
   if (maxContextTokensInput) {
     maxContextTokensInput.value = settings.retrievalMaxContextTokens || 0;
+  }
+
+  const dedupeChunkGroupsInput = document.getElementById('settings-retrieval-dedupe-chunk-groups-input');
+  if (dedupeChunkGroupsInput) {
+    dedupeChunkGroupsInput.checked = settings.retrievalDedupeChunkGroups !== false;
   }
 }
 

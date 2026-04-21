@@ -746,11 +746,44 @@ class SearchService {
   }
 
   /**
+   * Keep the single best-scoring chunk per chunkGroupId (hierarchical fine/coarse overlap).
+   * @param {Array} sortedByScoreDesc results already sorted by score descending
+   */
+  _dedupeChunkGroupsInOrder(sortedByScoreDesc) {
+    const seen = new Set();
+    const out = [];
+    for (const r of sortedByScoreDesc) {
+      let meta = r.metadata;
+      if (typeof meta === 'string') {
+        try {
+          meta = JSON.parse(meta);
+        } catch {
+          meta = null;
+        }
+      }
+      const gid =
+        meta && typeof meta === 'object' && meta.chunkGroupId != null
+          ? String(meta.chunkGroupId)
+          : '';
+      if (gid) {
+        if (seen.has(gid)) continue;
+        seen.add(gid);
+      }
+      out.push(r);
+    }
+    return out;
+  }
+
+  /**
    * Apply retrieval settings to search results
    */
   applyRetrievalSettings(results, settings = {}) {
-    let filtered = [...results];
-    
+    let filtered = [...results].sort((a, b) => b.score - a.score);
+
+    if (settings.dedupeChunkGroups) {
+      filtered = this._dedupeChunkGroupsInOrder(filtered);
+    }
+
     // Apply score threshold
     if (settings.scoreThreshold && settings.scoreThreshold > 0) {
       filtered = filtered.filter(r => r.score >= settings.scoreThreshold);

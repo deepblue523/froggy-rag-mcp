@@ -8,6 +8,13 @@ const ExcelJS = require('exceljs');
 const { convert: htmlToText } = require('html-to-text');
 const natural = require('natural');
 const { getChunkSearchText } = require('./chunk-search-text');
+const {
+  detectDocumentProfile,
+  splitStructuredUnits,
+  subdivideUnit,
+  CODE_LIKE_EXT,
+  MARKDOWN_EXT
+} = require('./document-chunk-strategies');
 
 class DocumentProcessor {
   constructor(embeddingModel, normalizeEmbeddings = true) {
@@ -79,6 +86,12 @@ class DocumentProcessor {
           const csvContent = await fsPromises.readFile(filePath, 'utf-8');
           content = csvContent;
           break;
+
+        case '.json':
+        case '.yaml':
+        case '.yml':
+          content = await fsPromises.readFile(filePath, 'utf-8');
+          break;
         
         case '.html':
         case '.htm':
@@ -92,9 +105,27 @@ class DocumentProcessor {
             ]
           });
           break;
-        
-        default:
+
+        default: {
+          const textExts = new Set([
+            ...CODE_LIKE_EXT,
+            ...MARKDOWN_EXT,
+            '.xml',
+            '.toml',
+            '.ini',
+            '.cfg',
+            '.properties',
+            '.gradle',
+            '.gitignore',
+            '.env',
+            '.editorconfig'
+          ]);
+          if (textExts.has(ext)) {
+            content = await fsPromises.readFile(filePath, 'utf-8');
+            break;
+          }
           throw new Error(`Unsupported file type: ${ext}`);
+        }
       }
 
       return { content, metadata };
@@ -103,98 +134,290 @@ class DocumentProcessor {
     }
   }
 
-  async chunkContent(content, metadata, chunkSize = 1000, overlap = 200, minChunkChars = 0, minChunkTokens = 0, maxChunksPerDocument = 0) {
-    // Intelligent chunking with overlap
+  /**
+   * @param {object} [chunkingOptions]
+   * @param {boolean} [chunkingOptions.intelligentChunking]
+   * @param {boolean} [chunkingOptions.hierarchicalChunking]
+   * @param {number} [chunkingOptions.hierarchicalCoarseWindowParts]
+   * @param {number} [chunkingOptions.chunkingWholeDocMaxRatio] if doc shorter than chunkSize * ratio, one chunk
+   * @param {object | null} [chunkingOptions.llmAdvisor] return value of createLlmChunkAdvisor
+   */
+  async chunkContent(
+    content,
+    metadata,
+    chunkSize = 1000,
+    overlap = 200,
+    minChunkChars = 0,
+    minChunkTokens = 0,
+    maxChunksPerDocument = 0,
+    chunkingOptions = {}
+  ) {
+    const opt = {
+      intelligentChunking: chunkingOptions.intelligentChunking !== false,
+      hierarchicalChunking: chunkingOptions.hierarchicalChunking === true,
+      hierarchicalCoarseWindowParts: Math.max(2, Number(chunkingOptions.hierarchicalCoarseWindowParts) || 3),
+      chunkingWholeDocMaxRatio: Number(chunkingOptions.chunkingWholeDocMaxRatio) > 1
+        ? Number(chunkingOptions.chunkingWholeDocMaxRatio)
+        : 1.15,
+      llmAdvisor: chunkingOptions.llmAdvisor || null,
+      chunkingLlmParagraphSeams: chunkingOptions.chunkingLlmParagraphSeams === true
+    };
+
+    let profile = detectDocumentProfile(content, metadata);
+    if (opt.intelligentChunking && opt.llmAdvisor && typeof opt.llmAdvisor.refineProfile === 'function') {
+      try {
+        const refined = await opt.llmAdvisor.refineProfile(content, metadata, profile);
+        if (refined) {
+          if (refined.suggestedMaxChars) {
+            profile = { ...profile, suggestedChunkSize: refined.suggestedMaxChars };
+          }
+          if (refined.useWholeDocument) {
+            profile = { ...profile, forceWholeDocument: true };
+          }
+          if (refined.llmNotes) {
+            profile = { ...profile, llmNotes: refined.llmNotes };
+          }
+        }
+      } catch (e) {
+        console.warn('[chunkContent] LLM profile refine skipped:', e.message);
+      }
+    }
+
+    const effectiveSize = Math.max(200, profile.suggestedChunkSize || chunkSize);
+    const wholeDocRatio = opt.chunkingWholeDocMaxRatio;
+
+    if (profile.forceWholeDocument || content.length <= effectiveSize * wholeDocRatio) {
+      return this._finalizeChunks(
+        [
+          {
+            id: uuidv4(),
+            content,
+            chunkIndex: 0,
+            metadata: {
+              ...metadata,
+              chunkType: 'whole',
+              docProfile: profile.kind,
+              docProfileSubkind: profile.subkind
+            }
+          }
+        ],
+        minChunkChars,
+        minChunkTokens,
+        maxChunksPerDocument
+      );
+    }
+
+    let stringPieces = null;
+    if (opt.intelligentChunking) {
+      stringPieces = splitStructuredUnits(content, profile);
+    }
+
+    if (!stringPieces || stringPieces.length === 0) {
+      stringPieces = opt.intelligentChunking
+        ? await this._proseParagraphUnits(content, opt)
+        : [content];
+    }
+
+    const baseStrings = [];
+    for (const piece of stringPieces) {
+      const parts = subdivideUnit(piece, effectiveSize, (t) => this.splitIntoSentences(t));
+      baseStrings.push(...parts);
+    }
+
+    let mergedByOverlap = this._mergeStringsWithOverlap(baseStrings, effectiveSize, overlap, metadata, profile);
+
+    if (opt.hierarchicalChunking && mergedByOverlap.length > 1) {
+      mergedByOverlap = this._addHierarchicalCoarseChunks(
+        mergedByOverlap,
+        opt.hierarchicalCoarseWindowParts,
+        metadata,
+        profile
+      );
+    }
+
+    return this._finalizeChunks(mergedByOverlap, minChunkChars, minChunkTokens, maxChunksPerDocument);
+  }
+
+  async _proseParagraphUnits(content, opt) {
+    const paragraphs = content.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+    if (paragraphs.length < 2) {
+      return paragraphs.length === 1 ? paragraphs : [content];
+    }
+    if (opt.chunkingLlmParagraphSeams && opt.llmAdvisor && paragraphs.length >= 6) {
+      try {
+        const seams = await opt.llmAdvisor.seamIndicesAfterParagraphs(paragraphs);
+        if (seams && seams.length > 0) {
+          const sorted = [...new Set(seams)].sort((a, b) => a - b);
+          const units = [];
+          let start = 0;
+          for (const b of sorted) {
+            if (b > start) {
+              units.push(paragraphs.slice(start, b).join('\n\n'));
+            }
+            start = b;
+          }
+          if (start < paragraphs.length) {
+            units.push(paragraphs.slice(start).join('\n\n'));
+          }
+          if (units.length) return units;
+        }
+      } catch (e) {
+        console.warn('[chunkContent] LLM paragraph seams skipped:', e.message);
+      }
+    }
+    return paragraphs;
+  }
+
+  _mergeStringsWithOverlap(strings, chunkSize, overlap, metadata, profile) {
+    const sentencesFlat = [];
+    for (const s of strings) {
+      const parts = this.splitIntoSentences(s);
+      if (parts.length === 0) sentencesFlat.push(s);
+      else sentencesFlat.push(...parts);
+    }
+
+    if (sentencesFlat.length === 0) {
+      const fallback = strings.filter(Boolean).join('\n\n').trim();
+      if (!fallback) return [];
+      return [
+        {
+          id: uuidv4(),
+          content: fallback,
+          chunkIndex: 0,
+          metadata: {
+            ...metadata,
+            chunkType: 'text',
+            docProfile: profile.kind,
+            docProfileSubkind: profile.subkind
+          }
+        }
+      ];
+    }
+
     const chunks = [];
-    const sentences = this.splitIntoSentences(content);
-    
     let currentChunk = [];
     let currentLength = 0;
 
-    for (const sentence of sentences) {
+    for (const sentence of sentencesFlat) {
       const sentenceLength = sentence.length;
-      
       if (currentLength + sentenceLength > chunkSize && currentChunk.length > 0) {
-        // Save current chunk
-        const chunkContent = currentChunk.join(' ');
         chunks.push({
           id: uuidv4(),
-          content: chunkContent,
+          content: currentChunk.join(' '),
           chunkIndex: chunks.length,
-          metadata: { ...metadata, chunkType: 'text' }
+          metadata: {
+            ...metadata,
+            chunkType: 'text',
+            docProfile: profile.kind,
+            docProfileSubkind: profile.subkind
+          }
         });
-
-        // Start new chunk with overlap
-        const overlapSentences = currentChunk.slice(-Math.floor(overlap / 50));
-        currentChunk = overlapSentences;
+        const overlapSentences = currentChunk.slice(-Math.max(1, Math.floor(overlap / 50)));
+        currentChunk = [...overlapSentences];
         currentLength = overlapSentences.join(' ').length;
       }
-
       currentChunk.push(sentence);
-      currentLength += sentenceLength + 1; // +1 for space
+      currentLength += sentenceLength + 1;
     }
 
-    // Add final chunk
     if (currentChunk.length > 0) {
-      const chunkContent = currentChunk.join(' ');
       chunks.push({
         id: uuidv4(),
-        content: chunkContent,
+        content: currentChunk.join(' '),
         chunkIndex: chunks.length,
-        metadata: { ...metadata, chunkType: 'text' }
+        metadata: {
+          ...metadata,
+          chunkType: 'text',
+          docProfile: profile.kind,
+          docProfileSubkind: profile.subkind
+        }
       });
     }
 
-    // Filter chunks by minimum size (chars and tokens)
-    let filteredChunks = chunks.filter(chunk => {
-      const content = chunk.content;
-      const charCount = content.length;
-      const tokens = this.tokenizer.tokenize(content) || [];
+    return chunks;
+  }
+
+  _addHierarchicalCoarseChunks(fineChunks, windowParts, metadata, profile) {
+    const out = [];
+    let idx = 0;
+    for (let i = 0; i < fineChunks.length; i += windowParts) {
+      const groupId = uuidv4();
+      const slice = fineChunks.slice(i, i + windowParts);
+      for (const c of slice) {
+        c.metadata = {
+          ...c.metadata,
+          chunkTier: 'fine',
+          chunkGroupId: groupId
+        };
+        c.chunkIndex = idx++;
+        out.push(c);
+      }
+      const mergedText = slice.map((c) => c.content).join('\n\n').trim();
+      if (mergedText && slice.length > 1) {
+        out.push({
+          id: uuidv4(),
+          content: mergedText,
+          chunkIndex: idx++,
+          metadata: {
+            ...metadata,
+            chunkType: 'text',
+            docProfile: profile.kind,
+            docProfileSubkind: profile.subkind,
+            chunkTier: 'coarse',
+            chunkGroupId: groupId,
+            chunkGroupRange: `${i}-${i + slice.length - 1}`
+          }
+        });
+      }
+    }
+    return out;
+  }
+
+  async _finalizeChunks(chunks, minChunkChars, minChunkTokens, maxChunksPerDocument) {
+    let filteredChunks = chunks.filter((chunk) => {
+      const body = chunk.content;
+      const charCount = body.length;
+      const tokens = this.tokenizer.tokenize(body) || [];
       const tokenCount = tokens.length;
-      
-      // Check minimum character count
+
       if (minChunkChars > 0 && charCount < minChunkChars) {
         return false;
       }
-      
-      // Check minimum token count
+
       if (minChunkTokens > 0 && tokenCount < minChunkTokens) {
         return false;
       }
-      
+
       return true;
     });
 
-    // Limit chunks per document if maxChunksPerDocument is set
     if (maxChunksPerDocument > 0 && filteredChunks.length > maxChunksPerDocument) {
       filteredChunks = filteredChunks.slice(0, maxChunksPerDocument);
-      // Update chunk indices
       filteredChunks.forEach((chunk, index) => {
         chunk.chunkIndex = index;
       });
     }
 
-    // Generate embeddings for chunks with batching to prevent blocking
     if (this.embeddingModel) {
-      const batchSize = 10; // Process 10 chunks at a time
+      const batchSize = 10;
       for (let i = 0; i < filteredChunks.length; i += batchSize) {
         const batch = filteredChunks.slice(i, i + batchSize);
-        
-        // Process batch concurrently
-        await Promise.all(batch.map(async (chunk) => {
-          try {
-            chunk.embedding = await this.generateEmbedding(
-              getChunkSearchText(chunk),
-              this.normalizeEmbeddings
-            );
-          } catch (error) {
-            console.error(`Error generating embedding for chunk ${chunk.id}:`, error);
-          }
-        }));
-        
-        // Yield to event loop between batches to prevent blocking
+
+        await Promise.all(
+          batch.map(async (chunk) => {
+            try {
+              chunk.embedding = await this.generateEmbedding(
+                getChunkSearchText(chunk),
+                this.normalizeEmbeddings
+              );
+            } catch (error) {
+              console.error(`Error generating embedding for chunk ${chunk.id}:`, error);
+            }
+          })
+        );
+
         if (i + batchSize < filteredChunks.length) {
-          await new Promise(resolve => setImmediate(resolve));
+          await new Promise((resolve) => setImmediate(resolve));
         }
       }
     }

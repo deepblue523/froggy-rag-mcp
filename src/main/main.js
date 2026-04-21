@@ -339,7 +339,7 @@ function isAutoUpdateEnvironment() {
   return app.isPackaged && !process.argv.includes('--dev');
 }
 
-/** GitHub Releases feed is taken from `build.publish` in package.json (embedded as app-update.yml when packaged). */
+/** GitHub feed: `build.publish` is embedded as `resources/app-update.yml` when packaged. electron-builder only writes that file for updater-capable Windows targets (e.g. NSIS), not MSI-only builds. */
 function registerAutoUpdaterListeners() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
