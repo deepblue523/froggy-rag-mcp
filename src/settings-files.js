@@ -155,6 +155,12 @@ function getDefaultSettings() {
     llmPassthroughOpenAiApiKey: '',
     llmPassthroughTimeoutMs: 120000,
     llmPassthroughSearchAlgorithm: 'hybrid',
+    /** Hostname (or bracketed IPv6) for the LLM tab's inbound HTTP test only; path/port still come from listener settings. */
+    llmPassthroughTestInboundHostname: '127.0.0.1',
+    /** LLM tab: `inbound-http` POSTs to local listener; `direct-ipc` calls main via IPC (same pipeline). */
+    llmPassthroughTestTransport: 'inbound-http',
+    /** @type {string[]} Up to 5 recent custom inbound test hosts (loopback/localhost are not stored). */
+    llmPassthroughTestInboundHostMru: [],
     /** @deprecated mirrors llmPassthroughEnabled; kept for older settings.json */
     passthroughListenEnabled: false,
     passthroughOllamaListenEnabled: false,

@@ -13,6 +13,8 @@ let handlersRegistered = false;
 let getDataDirFn = null;
 /** @type {import('./services/passthrough-inbound-server').PassthroughInboundService | null} */
 let inboundPassthroughRef = null;
+/** AbortController for in-flight LLM tab direct-IPC test (upstream fetch). */
+let llmPassthroughTestDirectAbortController = null;
 
 function waitForServices() {
   if (servicesReady && ragServiceRef && mcpServiceRef) {
@@ -212,6 +214,70 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
     return out;
   });
 
+  ipcMain.on('llm-passthrough-test-direct-cancel', () => {
+    if (llmPassthroughTestDirectAbortController) {
+      try {
+        llmPassthroughTestDirectAbortController.abort();
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  /**
+   * LLM tab: run the same RAG + upstream path as inbound HTTP without binding to loopback HTTP.
+   * @param {unknown} _
+   * @param {{ prompt?: string, messages?: { role?: string, content?: string }[], namespace?: string }} payload
+   */
+  ipcMain.handle('llm-passthrough-test-direct', async (_, payload) => {
+    await waitForServices();
+    const { completeChatProxy, extractPassthroughUpstreamReply } = require('./services/llm-passthrough');
+    const prompt =
+      payload && typeof payload.prompt === 'string' ? String(payload.prompt).trim() : '';
+    const rawMsgs = payload && payload.messages;
+    const messagesFromPayload =
+      Array.isArray(rawMsgs) && rawMsgs.length > 0 ? rawMsgs : null;
+    if (!messagesFromPayload && !prompt) {
+      return { ok: false, message: 'Enter a message or provide a conversation.' };
+    }
+    const nsRaw = payload && payload.namespace;
+    const namespace =
+      typeof nsRaw === 'string' && nsRaw.trim() ? nsRaw.trim() : undefined;
+    const inboundBody = messagesFromPayload
+      ? { messages: messagesFromPayload, stream: false }
+      : { messages: [{ role: 'user', content: prompt }], stream: false };
+    const abortController = new AbortController();
+    llmPassthroughTestDirectAbortController = abortController;
+    try {
+      const out = await completeChatProxy(ragServiceRef, inboundBody, {
+        namespace,
+        abortSignal: abortController.signal
+      });
+      const settings = ragServiceRef.getSettings();
+      const reply = extractPassthroughUpstreamReply(settings, out.upstreamJson);
+      if (!reply || !String(reply).trim()) {
+        return { ok: false, message: 'The model returned an empty response.' };
+      }
+      return {
+        ok: true,
+        reply: String(reply).trim(),
+        contextBlock: out.contextBlock || '',
+        warnings: out.warnings || [],
+        errors: out.errors || []
+      };
+    } catch (e) {
+      if (e && e.name === 'AbortError') {
+        return { ok: false, cancelled: true, message: 'Cancelled.' };
+      }
+      const msg = e && e.message ? e.message : String(e);
+      return { ok: false, message: msg };
+    } finally {
+      if (llmPassthroughTestDirectAbortController === abortController) {
+        llmPassthroughTestDirectAbortController = null;
+      }
+    }
+  });
+
   ipcMain.handle('toggle-devtools', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win && !win.isDestroyed()) {
@@ -242,6 +308,16 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
   });
 
   // File reading handlers - now reads HTML directly
+  ipcMain.handle('render-markdown', async (_, markdown) => {
+    try {
+      const { markdownToViewerDocument } = require('./markdown-viewer-html');
+      return markdownToViewerDocument(markdown);
+    } catch (error) {
+      console.error('render-markdown:', error);
+      return null;
+    }
+  });
+
   ipcMain.handle('read-usage-file', async () => {
     try {
       // Try HTML file first, fallback to MD if needed

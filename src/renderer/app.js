@@ -12,6 +12,336 @@ let searchCancelled = false; // Track if search was cancelled
 let searchTimerInterval = null; // Timer interval for updating search time
 let searchStartTime = null; // Start time of current search
 let namespaceSelectProgrammatic = false;
+/** @type {string | null} */
+let llmPassthroughReplyBlobUrl = null;
+
+const LLM_PASSTHROUGH_SEND_DEFAULT_LABEL = 'Send (RAG on latest turn)';
+let llmPassthroughSendInFlight = false;
+/** @type {null | (() => void)} */
+let llmPassthroughSendCancelFn = null;
+let llmPassthroughSendUserCancelled = false;
+
+const LLM_INBOUND_TEST_HOST_MRU_MAX = 5;
+/** Select value for "type a host not in the MRU list" */
+const LLM_INBOUND_TEST_HOST_MRU_NEW = '__mru_new__';
+
+const LLM_TESTER_CHATS_KEY = 'froggyLlmTesterChatsV1';
+const LLM_TESTER_MAX_CHATS = 35;
+const LLM_TESTER_MAX_MESSAGES = 100;
+
+function randomLlmTesterChatId() {
+  return `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function sanitizeLlmTesterMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  const out = [];
+  for (const m of messages) {
+    if (!m || typeof m !== 'object') continue;
+    const role = m.role === 'assistant' ? 'assistant' : m.role === 'user' ? 'user' : null;
+    if (!role) continue;
+    const content = typeof m.content === 'string' ? m.content : '';
+    if (!content.trim()) continue;
+    out.push({ role, content });
+  }
+  return out;
+}
+
+function createDefaultLlmTesterChatStore() {
+  const id = randomLlmTesterChatId();
+  return {
+    v: 1,
+    activeId: id,
+    chats: [{ id, title: 'New chat', updatedAt: Date.now(), messages: [] }]
+  };
+}
+
+function trimLlmTesterChatStore(store) {
+  store.chats = (store.chats || []).filter((c) => c && c.id);
+  store.chats.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  if (store.chats.length > LLM_TESTER_MAX_CHATS) {
+    store.chats = store.chats.slice(0, LLM_TESTER_MAX_CHATS);
+  }
+  if (!store.chats.length) {
+    const d = createDefaultLlmTesterChatStore();
+    store.v = d.v;
+    store.activeId = d.activeId;
+    store.chats = d.chats;
+    return;
+  }
+  if (!store.chats.some((c) => c.id === store.activeId)) {
+    store.activeId = store.chats[0].id;
+  }
+  for (const c of store.chats) {
+    if (c.messages.length > LLM_TESTER_MAX_MESSAGES) {
+      c.messages = c.messages.slice(-LLM_TESTER_MAX_MESSAGES);
+    }
+  }
+}
+
+function loadLlmTesterChatStore() {
+  try {
+    const raw = localStorage.getItem(LLM_TESTER_CHATS_KEY);
+    if (!raw) return createDefaultLlmTesterChatStore();
+    const o = JSON.parse(raw);
+    if (!o || o.v !== 1 || !Array.isArray(o.chats) || !o.chats.length) {
+      return createDefaultLlmTesterChatStore();
+    }
+    for (const c of o.chats) {
+      if (!c || typeof c.id !== 'string') return createDefaultLlmTesterChatStore();
+      c.messages = sanitizeLlmTesterMessages(c.messages);
+      if (typeof c.title !== 'string' || !c.title.trim()) c.title = 'Chat';
+      if (!Number.isFinite(c.updatedAt)) c.updatedAt = Date.now();
+    }
+    if (!o.chats.some((c) => c.id === o.activeId)) {
+      o.activeId = o.chats[0].id;
+    }
+    trimLlmTesterChatStore(o);
+    return o;
+  } catch {
+    return createDefaultLlmTesterChatStore();
+  }
+}
+
+function saveLlmTesterChatStore(store) {
+  trimLlmTesterChatStore(store);
+  try {
+    localStorage.setItem(LLM_TESTER_CHATS_KEY, JSON.stringify(store));
+  } catch (e) {
+    console.warn('saveLlmTesterChatStore', e);
+  }
+}
+
+function getActiveLlmTesterChatEntry(store) {
+  const c = store.chats.find((x) => x.id === store.activeId);
+  return c || store.chats[0] || null;
+}
+
+function maybeUpgradeLlmTesterTitleFromMessages(chat) {
+  const t = (chat.title || '').trim().toLowerCase();
+  if (t && t !== 'new chat') return;
+  const firstUser = chat.messages.find((m) => m.role === 'user');
+  if (!firstUser || !firstUser.content.trim()) return;
+  const line = firstUser.content.trim().split(/\r?\n/)[0];
+  chat.title = line.length <= 52 ? line : `${line.slice(0, 49)}…`;
+}
+
+let llmTesterChatSelectListenerBound = false;
+let llmCanvasTabsListenerBound = false;
+
+function renderLlmTesterChatSelect() {
+  const sel = document.getElementById('llm-tester-chat-select');
+  if (!sel) return;
+  const store = loadLlmTesterChatStore();
+  const sorted = [...store.chats].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  sel.replaceChildren();
+  for (const c of sorted) {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    const d = new Date(c.updatedAt);
+    const timeStr = d.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+    opt.textContent = `${c.title || 'Chat'} — ${timeStr}`;
+    sel.appendChild(opt);
+  }
+  if (!sorted.some((c) => c.id === store.activeId) && sorted.length) {
+    store.activeId = sorted[0].id;
+    saveLlmTesterChatStore(store);
+  }
+  sel.value = store.activeId;
+}
+
+function renderLlmTesterTranscript() {
+  const wrap = document.getElementById('llm-tester-transcript');
+  if (!wrap) return;
+  wrap.replaceChildren();
+  const store = loadLlmTesterChatStore();
+  const chat = getActiveLlmTesterChatEntry(store);
+  if (!chat || !chat.messages.length) {
+    const p = document.createElement('p');
+    p.className = 'llm-tester-transcript-empty';
+    p.textContent = 'No messages yet. Type below and send to start.';
+    wrap.appendChild(p);
+    return;
+  }
+  for (const m of chat.messages) {
+    const row = document.createElement('div');
+    const isAsst = m.role === 'assistant';
+    row.className = `llm-tester-transcript-msg llm-tester-transcript-msg-${
+      isAsst ? 'assistant' : 'user'
+    }`;
+    const label = document.createElement('div');
+    label.className = 'llm-tester-transcript-label';
+    label.textContent = isAsst ? 'Assistant' : 'You';
+    const body = document.createElement('div');
+    body.className = 'llm-tester-transcript-body';
+    body.textContent = m.content;
+    row.appendChild(label);
+    row.appendChild(body);
+    wrap.appendChild(row);
+  }
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+async function refreshLlmTesterLastReplyFromMessages() {
+  const store = loadLlmTesterChatStore();
+  const chat = getActiveLlmTesterChatEntry(store);
+  let last = '';
+  if (chat) {
+    for (let i = chat.messages.length - 1; i >= 0; i--) {
+      if (chat.messages[i].role === 'assistant') {
+        last = chat.messages[i].content;
+        break;
+      }
+    }
+  }
+  if (last && String(last).trim()) {
+    await setLlmPassthroughReplyMarkdown(last);
+  } else {
+    clearLlmPassthroughReply();
+  }
+}
+
+function refreshLlmTesterChatPanel() {
+  renderLlmTesterChatSelect();
+  renderLlmTesterTranscript();
+  void refreshLlmTesterLastReplyFromMessages();
+}
+
+function setupLlmCanvasTabsOnce() {
+  if (llmCanvasTabsListenerBound) return;
+  const btnSettings = document.getElementById('llm-canvas-tab-settings-btn');
+  const btnChat = document.getElementById('llm-canvas-tab-chat-btn');
+  const panelSettings = document.getElementById('llm-canvas-panel-settings');
+  const panelChat = document.getElementById('llm-canvas-panel-chat');
+  if (!btnSettings || !btnChat || !panelSettings || !panelChat) return;
+  llmCanvasTabsListenerBound = true;
+
+  /**
+   * @param {'settings' | 'chat'} which
+   */
+  function activateLlmCanvasTab(which) {
+    const chat = which === 'chat';
+    btnSettings.classList.toggle('is-active', !chat);
+    btnChat.classList.toggle('is-active', chat);
+    btnSettings.setAttribute('aria-selected', chat ? 'false' : 'true');
+    btnChat.setAttribute('aria-selected', chat ? 'true' : 'false');
+    btnSettings.tabIndex = chat ? -1 : 0;
+    btnChat.tabIndex = chat ? 0 : -1;
+    panelSettings.hidden = chat;
+    panelChat.hidden = !chat;
+  }
+
+  btnSettings.addEventListener('click', () => activateLlmCanvasTab('settings'));
+  btnChat.addEventListener('click', () => activateLlmCanvasTab('chat'));
+
+  btnSettings.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      activateLlmCanvasTab('chat');
+      btnChat.focus();
+    }
+  });
+  btnChat.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      activateLlmCanvasTab('settings');
+      btnSettings.focus();
+    }
+  });
+}
+
+function setupLlmTesterChatControlsOnce() {
+  if (llmTesterChatSelectListenerBound) return;
+  llmTesterChatSelectListenerBound = true;
+  const sel = document.getElementById('llm-tester-chat-select');
+  if (sel) {
+    sel.addEventListener('change', () => {
+      const store = loadLlmTesterChatStore();
+      const id = sel.value;
+      if (!id || !store.chats.some((c) => c.id === id)) return;
+      store.activeId = id;
+      saveLlmTesterChatStore(store);
+      const pe = document.getElementById('llm-passthrough-prompt');
+      if (pe) pe.value = '';
+      renderLlmTesterTranscript();
+      void refreshLlmTesterLastReplyFromMessages();
+    });
+  }
+  const newBtn = document.getElementById('llm-tester-new-chat-btn');
+  if (newBtn) {
+    newBtn.addEventListener('click', () => {
+      const store = loadLlmTesterChatStore();
+      const id = randomLlmTesterChatId();
+      store.chats.push({
+        id,
+        title: 'New chat',
+        updatedAt: Date.now(),
+        messages: []
+      });
+      store.activeId = id;
+      saveLlmTesterChatStore(store);
+      const pe = document.getElementById('llm-passthrough-prompt');
+      if (pe) pe.value = '';
+      refreshLlmTesterChatPanel();
+    });
+  }
+  const clearBtn = document.getElementById('llm-tester-clear-turns-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      const store = loadLlmTesterChatStore();
+      const chat = getActiveLlmTesterChatEntry(store);
+      if (!chat) return;
+      chat.messages = [];
+      chat.updatedAt = Date.now();
+      chat.title = 'New chat';
+      saveLlmTesterChatStore(store);
+      clearLlmPassthroughReply();
+      refreshLlmTesterChatPanel();
+    });
+  }
+}
+
+function clearLlmPassthroughReply() {
+  const el = document.getElementById('llm-passthrough-reply');
+  if (llmPassthroughReplyBlobUrl) {
+    URL.revokeObjectURL(llmPassthroughReplyBlobUrl);
+    llmPassthroughReplyBlobUrl = null;
+  }
+  if (el) el.replaceChildren();
+}
+
+async function setLlmPassthroughReplyMarkdown(markdown) {
+  const el = document.getElementById('llm-passthrough-reply');
+  if (!el) return;
+  clearLlmPassthroughReply();
+  const raw = typeof markdown === 'string' ? markdown : '';
+  if (!window.electronAPI || typeof window.electronAPI.renderMarkdown !== 'function') {
+    el.textContent = raw;
+    return;
+  }
+  let doc;
+  try {
+    doc = await window.electronAPI.renderMarkdown(raw);
+  } catch {
+    doc = null;
+  }
+  if (!doc || typeof doc !== 'string') {
+    el.textContent = raw;
+    return;
+  }
+  const frame = document.createElement('iframe');
+  frame.className = 'llm-markdown-viewer-iframe';
+  frame.title = 'Model reply (markdown)';
+  frame.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
+  llmPassthroughReplyBlobUrl = URL.createObjectURL(new Blob([doc], { type: 'text/html;charset=utf-8' }));
+  frame.src = llmPassthroughReplyBlobUrl;
+  el.appendChild(frame);
+}
 
 async function populateNamespaceSelect() {
   const sel = document.getElementById('namespace-select');
@@ -384,7 +714,10 @@ async function initializeApp() {
     await loadLlmTestPanelRetrievalSettings();
   } catch (error) {
     console.error('Error loading initial data:', error);
+    void refreshAppStatusBar();
   }
+
+  setInterval(() => void refreshAppStatusBar(), 20000);
 }
 
 function hideLoadingScreen() {
@@ -543,6 +876,53 @@ function setupEventListeners() {
     llmTestTimeout.addEventListener('input', () => schedulePersistLlmTestRetrievalSettings());
   }
 
+  const llmTestTransport = document.getElementById('llm-passthrough-test-transport-select');
+  if (llmTestTransport) {
+    llmTestTransport.addEventListener('change', () => {
+      setLlmTestInboundHostSectionVisible(llmTestTransport.value === 'direct-ipc');
+      schedulePersistLlmTestRetrievalSettings();
+      void refreshLlmPassthroughPanel();
+    });
+  }
+
+  const llmInboundHostPreset = document.getElementById('llm-passthrough-test-inbound-host-preset-select');
+  const llmInboundHostCustomWrap = document.getElementById('llm-passthrough-test-inbound-host-custom-wrap');
+  if (llmInboundHostPreset) {
+    llmInboundHostPreset.addEventListener('change', async () => {
+      if (llmInboundHostCustomWrap) {
+        llmInboundHostCustomWrap.style.display =
+          llmInboundHostPreset.value === 'custom' ? 'flex' : 'none';
+      }
+      if (llmInboundHostPreset.value === 'custom') {
+        try {
+          const s = await window.electronAPI.getSettings();
+          refreshLlmTestInboundHostMruSelect(s);
+        } catch (e) {
+          console.error('refresh inbound host MRU on preset change', e);
+        }
+      }
+      void persistLlmTestRetrievalSettingsFromInputs();
+    });
+  }
+  const llmInboundHostMru = document.getElementById('llm-passthrough-test-inbound-host-mru-select');
+  if (llmInboundHostMru) {
+    llmInboundHostMru.addEventListener('change', () => {
+      const customInClear = document.getElementById('llm-passthrough-test-inbound-host-custom-input');
+      if (llmInboundHostMru.value !== LLM_INBOUND_TEST_HOST_MRU_NEW && customInClear) {
+        customInClear.value = '';
+      }
+      schedulePersistLlmTestRetrievalSettings();
+    });
+  }
+  const llmInboundHostCustom = document.getElementById('llm-passthrough-test-inbound-host-custom-input');
+  if (llmInboundHostCustom) {
+    llmInboundHostCustom.addEventListener('change', () => schedulePersistLlmTestRetrievalSettings());
+    llmInboundHostCustom.addEventListener('input', () => schedulePersistLlmTestRetrievalSettings());
+  }
+
+  setupLlmTesterChatControlsOnce();
+  setupLlmCanvasTabsOnce();
+
   const llmPassthroughEnabledInput = document.getElementById('settings-llm-passthrough-enabled-input');
   if (llmPassthroughEnabledInput) {
     llmPassthroughEnabledInput.addEventListener('change', () => {
@@ -567,91 +947,208 @@ function setupEventListeners() {
   const llmSendBtn = document.getElementById('llm-passthrough-send-btn');
   if (llmSendBtn) {
     llmSendBtn.addEventListener('click', async () => {
+      if (llmPassthroughSendCancelFn) {
+        llmPassthroughSendUserCancelled = true;
+        runLlmPassthroughSendCancel();
+        return;
+      }
+      if (llmPassthroughSendInFlight) return;
+
       const promptEl = document.getElementById('llm-passthrough-prompt');
-      const replyEl = document.getElementById('llm-passthrough-reply');
       const ctxEl = document.getElementById('llm-passthrough-context-preview');
       const statusEl = document.getElementById('llm-passthrough-send-status');
       const text = promptEl ? promptEl.value : '';
       if (!text || !String(text).trim()) {
-        alert('Enter a test prompt.');
+        alert('Enter a message.');
         return;
       }
-      llmSendBtn.disabled = true;
-      if (statusEl) statusEl.textContent = 'Calling inbound passthrough…';
-      if (replyEl) replyEl.textContent = '';
+      const userContent = String(text).trim();
+      if (statusEl) statusEl.textContent = 'Calling LLM passthrough…';
+      clearLlmPassthroughReply();
       if (ctxEl) {
         ctxEl.textContent =
-          'The inbound HTTP response contains only the upstream model output (retrieved chunks are merged server-side). Use Search with the same prompt to inspect matching chunks.';
+          'RAG uses the latest user turn. Inbound HTTP does not return chunk text in the chat body; use Search on that turn to inspect hits. Direct IPC fills this preview after each run.';
       }
       try {
         await persistLlmTestRetrievalSettingsFromInputs();
-        const mcpStatus = await window.electronAPI.getMCPServerStatus();
-        const target = pickInboundLlmPassthroughEndpoint(mcpStatus);
-        if (!target) {
-          alert(
-            'No inbound passthrough listener is available. Under Settings → Server, enable LLM Passthrough, turn on at least one inbound listener (Ollama-style or OpenAI-compatible), save, and confirm the Server status shows listening.'
-          );
-          if (statusEl) statusEl.textContent = '';
-          return;
-        }
         const settings = await window.electronAPI.getSettings();
-        const timeoutMs =
-          Number.isFinite(settings.llmPassthroughTimeoutMs) && settings.llmPassthroughTimeoutMs > 0
-            ? settings.llmPassthroughTimeoutMs
-            : 120000;
+        const store = loadLlmTesterChatStore();
+        const chat = getActiveLlmTesterChatEntry(store);
+        if (!chat) {
+          throw new Error('No active chat session.');
+        }
+        chat.messages.push({ role: 'user', content: userContent });
+        chat.updatedAt = Date.now();
+        maybeUpgradeLlmTesterTitleFromMessages(chat);
+        saveLlmTesterChatStore(store);
+        if (promptEl) promptEl.value = '';
+        renderLlmTesterChatSelect();
+        renderLlmTesterTranscript();
+
+        const messagesPayload = chat.messages.map((m) => ({
+          role: m.role,
+          content: m.content
+        }));
+
+        const useDirectIpc = settings.llmPassthroughTestTransport === 'direct-ipc';
         const activeNs = window.electronAPI.getActiveNamespace
           ? await window.electronAPI.getActiveNamespace()
           : '';
-        const headers = { 'Content-Type': 'application/json' };
-        if (activeNs && String(activeNs).trim()) {
-          headers['X-Froggy-Namespace'] = String(activeNs).trim();
-        }
-        const bodyObj = {
-          messages: [{ role: 'user', content: String(text).trim() }],
-          stream: false
-        };
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        let response;
-        try {
-          response = await fetch(target.url, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(bodyObj),
-            signal: controller.signal
+        if (useDirectIpc) {
+          if (statusEl) statusEl.textContent = 'Calling LLM passthrough (IPC)…';
+          if (ctxEl) {
+            ctxEl.textContent = 'Retrieved context appears here after a successful IPC run.';
+          }
+          if (!window.electronAPI.llmPassthroughTestDirect) {
+            throw new Error('This build does not expose llmPassthroughTestDirect; reload the app after update.');
+          }
+          beginLlmPassthroughSendCancellable(llmSendBtn, () => {
+            if (window.electronAPI.llmPassthroughTestDirectCancel) {
+              window.electronAPI.llmPassthroughTestDirectCancel();
+            }
           });
-        } finally {
-          clearTimeout(timer);
-        }
-        const rawText = await response.text();
-        let data = null;
-        try {
-          data = rawText ? JSON.parse(rawText) : null;
-        } catch {
-          data = null;
-        }
-        if (!response.ok) {
-          throw new Error(inboundPassthroughErrorMessage(response.status, data));
-        }
-        const reply = extractLlmTestReplyFromPassthroughJson(target.kind, data);
-        if (!reply || !String(reply).trim()) {
-          throw new Error('The model returned an empty response.');
-        }
-        if (replyEl) replyEl.textContent = reply;
-        if (statusEl) {
-          statusEl.textContent = `Done (via ${target.kind === 'openai' ? 'OpenAI-compatible' : 'Ollama-style'} inbound).`;
+          const ipcResult = await window.electronAPI.llmPassthroughTestDirect({
+            messages: messagesPayload,
+            namespace: activeNs && String(activeNs).trim() ? String(activeNs).trim() : undefined
+          });
+          if (ipcResult && ipcResult.cancelled === true) {
+            const err = new Error('Cancelled.');
+            err.name = 'UserCancelled';
+            throw err;
+          }
+          if (!ipcResult || ipcResult.ok !== true) {
+            throw new Error(
+              ipcResult && typeof ipcResult.message === 'string'
+                ? ipcResult.message
+                : 'IPC LLM test failed.'
+            );
+          }
+          const replyTrim = String(ipcResult.reply || '').trim();
+          chat.messages.push({ role: 'assistant', content: replyTrim });
+          chat.updatedAt = Date.now();
+          saveLlmTesterChatStore(store);
+          renderLlmTesterChatSelect();
+          renderLlmTesterTranscript();
+          await setLlmPassthroughReplyMarkdown(ipcResult.reply);
+          if (ctxEl) {
+            let block = ipcResult.contextBlock || '(No retrieved text)';
+            if (ipcResult.errors && ipcResult.errors.length) {
+              block += `\n\n---\nErrors:\n${ipcResult.errors.join('\n')}`;
+            }
+            if (ipcResult.warnings && ipcResult.warnings.length) {
+              block += `\n\n---\nWarnings:\n${ipcResult.warnings.join('\n')}`;
+            }
+            ctxEl.textContent = block;
+          }
+          if (statusEl) statusEl.textContent = 'Done (via direct IPC).';
+        } else {
+          const mcpStatus = await window.electronAPI.getMCPServerStatus();
+          const inboundHost = String(
+            settings.llmPassthroughTestInboundHostname || '127.0.0.1'
+          ).trim() || '127.0.0.1';
+          const target = pickInboundLlmPassthroughEndpoint(mcpStatus, inboundHost);
+          if (!target) {
+            chat.messages.pop();
+            saveLlmTesterChatStore(store);
+            renderLlmTesterChatSelect();
+            renderLlmTesterTranscript();
+            if (promptEl) promptEl.value = userContent;
+            alert(
+              'No inbound passthrough listener is available. Under Settings → Server, enable LLM Passthrough, turn on at least one inbound listener (Ollama-style or OpenAI-compatible), save, and confirm the Server status shows listening. Or choose “Direct IPC” under Test transport to skip HTTP.'
+            );
+            if (statusEl) statusEl.textContent = '';
+            return;
+          }
+          const timeoutMs =
+            Number.isFinite(settings.llmPassthroughTimeoutMs) && settings.llmPassthroughTimeoutMs > 0
+              ? settings.llmPassthroughTimeoutMs
+              : 120000;
+          const headers = { 'Content-Type': 'application/json' };
+          if (activeNs && String(activeNs).trim()) {
+            headers['X-Froggy-Namespace'] = String(activeNs).trim();
+          }
+          const bodyObj = {
+            messages: messagesPayload,
+            stream: false
+          };
+          const controller = new AbortController();
+          let httpTimer = null;
+          beginLlmPassthroughSendCancellable(llmSendBtn, () => {
+            if (httpTimer != null) clearTimeout(httpTimer);
+            controller.abort();
+          });
+          httpTimer = setTimeout(() => controller.abort(), timeoutMs);
+          let response;
+          try {
+            response = await fetch(target.url, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(bodyObj),
+              signal: controller.signal
+            });
+          } finally {
+            if (httpTimer != null) clearTimeout(httpTimer);
+          }
+          const rawText = await response.text();
+          let data = null;
+          try {
+            data = rawText ? JSON.parse(rawText) : null;
+          } catch {
+            data = null;
+          }
+          if (!response.ok) {
+            throw new Error(inboundPassthroughErrorMessage(response.status, data));
+          }
+          const reply = extractLlmTestReplyFromPassthroughJson(target.kind, data);
+          if (!reply || !String(reply).trim()) {
+            throw new Error('The model returned an empty response.');
+          }
+          const replyTrim = String(reply).trim();
+          chat.messages.push({ role: 'assistant', content: replyTrim });
+          chat.updatedAt = Date.now();
+          saveLlmTesterChatStore(store);
+          renderLlmTesterChatSelect();
+          renderLlmTesterTranscript();
+          await setLlmPassthroughReplyMarkdown(reply);
+          if (statusEl) {
+            statusEl.textContent = `Done (via ${target.kind === 'openai' ? 'OpenAI-compatible' : 'Ollama-style'} inbound).`;
+          }
         }
       } catch (e) {
-        const msg =
-          e && e.name === 'AbortError'
-            ? 'Request timed out.'
-            : e && e.message
-              ? e.message
-              : String(e);
-        alert(msg);
-        if (replyEl) replyEl.textContent = '';
-        if (statusEl) statusEl.textContent = '';
+        const rollbackLastUser = () => {
+          const st = loadLlmTesterChatStore();
+          const ch = getActiveLlmTesterChatEntry(st);
+          if (ch && ch.messages.length && ch.messages[ch.messages.length - 1].role === 'user') {
+            const last = ch.messages[ch.messages.length - 1];
+            if (last.content === userContent) {
+              ch.messages.pop();
+              ch.updatedAt = Date.now();
+              saveLlmTesterChatStore(st);
+              renderLlmTesterChatSelect();
+              renderLlmTesterTranscript();
+              const pe = document.getElementById('llm-passthrough-prompt');
+              if (pe) pe.value = userContent;
+            }
+          }
+        };
+        if (llmPassthroughSendUserCancelled || (e && e.name === 'UserCancelled')) {
+          rollbackLastUser();
+          clearLlmPassthroughReply();
+          if (statusEl) statusEl.textContent = 'Cancelled.';
+        } else {
+          const msg =
+            e && e.name === 'AbortError'
+              ? 'Request timed out.'
+              : e && e.message
+                ? e.message
+                : String(e);
+          alert(msg);
+          rollbackLastUser();
+          clearLlmPassthroughReply();
+          if (statusEl) statusEl.textContent = '';
+        }
       } finally {
+        endLlmPassthroughSendUi(llmSendBtn);
         await refreshLlmPassthroughPanel();
       }
     });
@@ -985,6 +1482,8 @@ function showCanvas(canvasName) {
       break;
     case 'llm':
       document.getElementById('llm-canvas').style.display = 'block';
+      setupLlmTesterChatControlsOnce();
+      refreshLlmTesterChatPanel();
       void loadLlmTestPanelRetrievalSettings();
       void refreshLlmPassthroughPanel();
       break;
@@ -1215,6 +1714,133 @@ async function showDirectoryFiles(dirPath, directoryRow) {
   }
 }
 
+function setStatusBarPassthrough(el, inbound) {
+  el.textContent = '';
+  el.title = 'Inbound LLM passthrough (Settings → Server)';
+  el.classList.remove('status-bar-running', 'status-bar-stopped', 'status-bar-warning', 'status-bar-error');
+
+  el.appendChild(document.createTextNode('LLM passthrough: '));
+
+  if (!inbound) {
+    const s = document.createElement('span');
+    s.className = 'status-bar-stopped';
+    s.textContent = '—';
+    el.appendChild(s);
+    return;
+  }
+
+  if (!inbound.masterEnabled) {
+    const s = document.createElement('span');
+    s.className = 'status-bar-stopped';
+    s.textContent = 'off';
+    el.appendChild(s);
+    return;
+  }
+
+  const parts = [];
+  if (inbound.ollama && inbound.ollama.enabled) {
+    const port = inbound.ollama.port != null ? inbound.ollama.port : '—';
+    if (inbound.ollama.listening) {
+      parts.push({ label: `Ollama :${port}`, ok: true });
+    } else {
+      parts.push({
+        label: `Ollama :${port} (not listening)`,
+        ok: false,
+        detail: inbound.ollama.lastError
+      });
+    }
+  }
+  if (inbound.openai && inbound.openai.enabled) {
+    const port = inbound.openai.port != null ? inbound.openai.port : '—';
+    if (inbound.openai.listening) {
+      parts.push({ label: `OpenAI :${port}`, ok: true });
+    } else {
+      parts.push({
+        label: `OpenAI :${port} (not listening)`,
+        ok: false,
+        detail: inbound.openai.lastError
+      });
+    }
+  }
+
+  if (parts.length === 0) {
+    const s = document.createElement('span');
+    s.className = 'status-bar-warning';
+    s.textContent = 'on (no listeners enabled)';
+    el.appendChild(s);
+    return;
+  }
+
+  const allOk = parts.every((p) => p.ok);
+  const summary = document.createElement('span');
+  summary.className = allOk ? 'status-bar-running' : 'status-bar-warning';
+  summary.textContent = parts.map((p) => p.label).join(' · ');
+  const tip = parts
+    .filter((p) => !p.ok && p.detail)
+    .map((p) => `${p.label}: ${p.detail}`)
+    .join('\n');
+  if (tip) {
+    el.title = `Inbound LLM passthrough\n${tip}`;
+  }
+  el.appendChild(summary);
+}
+
+async function refreshAppStatusBar() {
+  const nsEl = document.getElementById('status-bar-namespace');
+  const serverEl = document.getElementById('status-bar-server');
+  const passthroughEl = document.getElementById('status-bar-passthrough');
+  const storeEl = document.getElementById('status-bar-store');
+  if (!nsEl || !serverEl || !passthroughEl || !storeEl) return;
+
+  nsEl.classList.remove('status-bar-error');
+  serverEl.classList.remove('status-bar-running', 'status-bar-stopped', 'status-bar-error');
+  passthroughEl.classList.remove('status-bar-running', 'status-bar-stopped', 'status-bar-warning', 'status-bar-error');
+  storeEl.classList.remove('status-bar-error');
+
+  try {
+    const [mcp, stats, ns] = await Promise.all([
+      window.electronAPI.getMCPServerStatus(),
+      window.electronAPI.getVectorStoreStats(),
+      window.electronAPI.getActiveNamespace()
+    ]);
+
+    const nsLabel = ns != null && String(ns).trim() !== '' ? String(ns).trim() : 'default';
+    nsEl.textContent = `Namespace: ${nsLabel}`;
+
+    serverEl.textContent = '';
+    if (mcp.running && mcp.port) {
+      serverEl.appendChild(document.createTextNode('MCP server: '));
+      const run = document.createElement('span');
+      run.className = 'status-bar-running';
+      run.textContent = `running (port ${mcp.port})`;
+      serverEl.appendChild(run);
+    } else {
+      serverEl.appendChild(document.createTextNode('MCP server: '));
+      const st = document.createElement('span');
+      st.className = 'status-bar-stopped';
+      st.textContent = 'stopped';
+      serverEl.appendChild(st);
+    }
+
+    setStatusBarPassthrough(passthroughEl, mcp.inboundPassthrough);
+
+    const docs = stats.documentCount ?? 0;
+    const chunks = stats.chunkCount ?? 0;
+    const size = formatBytes(stats.totalSize ?? 0);
+    storeEl.textContent = `Vector store: ${docs} documents · ${chunks} chunks · ${size}`;
+  } catch (e) {
+    console.error('refreshAppStatusBar', e);
+    nsEl.textContent = 'Namespace: —';
+    nsEl.classList.add('status-bar-error');
+    serverEl.textContent = 'MCP server: unavailable';
+    serverEl.classList.add('status-bar-error');
+    passthroughEl.textContent = 'LLM passthrough: unavailable';
+    passthroughEl.classList.add('status-bar-error');
+    storeEl.textContent = 'Vector store: unavailable';
+    storeEl.classList.add('status-bar-error');
+  }
+}
+
 async function refreshVectorStore() {
   const stats = await window.electronAPI.getVectorStoreStats();
   const documents = await window.electronAPI.getDocuments();
@@ -1261,6 +1887,8 @@ async function refreshVectorStore() {
     `;
     tbody.appendChild(row);
   });
+
+  void refreshAppStatusBar();
 }
 
 async function showDocumentChunks(documentId) {
@@ -2155,6 +2783,8 @@ async function refreshServerStatus() {
   } else if (inboundEl) {
     inboundEl.textContent = '';
   }
+
+  void refreshAppStatusBar();
 }
 
 function setupCopyButtons() {
@@ -2532,17 +3162,49 @@ function syncLlmPassthroughProviderUi() {
   wrap.style.display = sel.value === 'openai' ? 'block' : 'none';
 }
 
+function setLlmTestInboundHostSectionVisible(directIpc) {
+  const section = document.getElementById('llm-passthrough-inbound-test-host-section');
+  if (section) {
+    section.style.display = directIpc ? 'none' : 'flex';
+  }
+}
+
 async function loadLlmTestPanelRetrievalSettings() {
   const settings = await window.electronAPI.getSettings();
+  const transportEl = document.getElementById('llm-passthrough-test-transport-select');
+  if (transportEl) {
+    const tr = settings.llmPassthroughTestTransport === 'direct-ipc' ? 'direct-ipc' : 'inbound-http';
+    transportEl.value = tr;
+    setLlmTestInboundHostSectionVisible(tr === 'direct-ipc');
+  }
   const timeout = document.getElementById('llm-passthrough-timeout-input');
   if (timeout) {
-    timeout.value =
+    const ms =
       settings.llmPassthroughTimeoutMs != null ? settings.llmPassthroughTimeoutMs : 120000;
+    timeout.value = String(Math.round(Number(ms) / 1000));
   }
   const algo = document.getElementById('llm-passthrough-search-algorithm-select');
   if (algo) {
     const a = settings.llmPassthroughSearchAlgorithm || 'hybrid';
     algo.value = ['hybrid', 'bm25', 'tfidf', 'vector'].includes(a) ? a : 'hybrid';
+  }
+  const h = String(settings.llmPassthroughTestInboundHostname || '127.0.0.1').trim() || '127.0.0.1';
+  const preset = document.getElementById('llm-passthrough-test-inbound-host-preset-select');
+  const customWrap = document.getElementById('llm-passthrough-test-inbound-host-custom-wrap');
+  if (preset) {
+    if (h === '127.0.0.1') {
+      preset.value = '127.0.0.1';
+    } else if (h.toLowerCase() === 'localhost') {
+      preset.value = 'localhost';
+    } else {
+      preset.value = 'custom';
+    }
+  }
+  if (customWrap) {
+    customWrap.style.display = preset && preset.value === 'custom' ? 'flex' : 'none';
+  }
+  if (preset && preset.value === 'custom') {
+    refreshLlmTestInboundHostMruSelect(settings);
   }
 }
 
@@ -2555,20 +3217,174 @@ function schedulePersistLlmTestRetrievalSettings() {
   }, 450);
 }
 
+/**
+ * @param {unknown} raw
+ * @returns {string | null} trimmed hostname / bracketed IPv6, or null if invalid
+ */
+function normalizeLlmPassthroughTestInboundHostname(raw) {
+  const t = String(raw == null ? '' : raw).trim();
+  if (!t) return null;
+  if (t.length > 253) return null;
+  if (/[\s\u0000-\u001f\/\\]/.test(t)) return null;
+  return t;
+}
+
+/**
+ * @param {unknown} hostname normalized or stored hostname
+ * @returns {string} host portion safe inside http://HOST:port/…
+ */
+function formatHostnameForInboundTestUrl(hostname) {
+  const n = normalizeLlmPassthroughTestInboundHostname(hostname);
+  const t = n || '127.0.0.1';
+  if (t.startsWith('[')) return t;
+  if (/^[0-9A-Fa-f:]+$/.test(t) && t.includes(':')) return `[${t}]`;
+  return t;
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {string[]}
+ */
+function sanitizeLlmPassthroughTestInboundHostMru(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const x of raw) {
+    const n = normalizeLlmPassthroughTestInboundHostname(x);
+    if (!n) continue;
+    const low = n.toLowerCase();
+    if (low === '127.0.0.1' || low === 'localhost') continue;
+    if (n === LLM_INBOUND_TEST_HOST_MRU_NEW) continue;
+    if (seen.has(low)) continue;
+    seen.add(low);
+    out.push(n);
+    if (out.length >= LLM_INBOUND_TEST_HOST_MRU_MAX) break;
+  }
+  return out;
+}
+
+/**
+ * @param {string[]} mru
+ * @param {string} hostname
+ * @returns {string | null} canonical entry from MRU matching hostname (case-insensitive), or null
+ */
+function findCanonicalInboundHostMruMatch(mru, hostname) {
+  const hn = String(hostname || '').trim();
+  if (!hn) return null;
+  const low = hn.toLowerCase();
+  for (const x of mru) {
+    const t = String(x).trim();
+    if (t.toLowerCase() === low) return t;
+  }
+  return null;
+}
+
+/**
+ * @param {Record<string, unknown>} settings mutated
+ * @param {string} host normalized custom host
+ */
+function recordLlmPassthroughTestInboundHostMru(settings, host) {
+  const n = normalizeLlmPassthroughTestInboundHostname(host);
+  if (!n) return;
+  const low = n.toLowerCase();
+  if (low === '127.0.0.1' || low === 'localhost') return;
+  let arr = sanitizeLlmPassthroughTestInboundHostMru(settings.llmPassthroughTestInboundHostMru);
+  const idx = arr.findIndex((x) => x.toLowerCase() === low);
+  if (idx >= 0) arr.splice(idx, 1);
+  arr.unshift(n);
+  if (arr.length > LLM_INBOUND_TEST_HOST_MRU_MAX) {
+    arr = arr.slice(0, LLM_INBOUND_TEST_HOST_MRU_MAX);
+  }
+  settings.llmPassthroughTestInboundHostMru = arr;
+}
+
+/**
+ * Rebuild Recent dropdown from settings and align selection + New field with stored hostname.
+ * @param {Record<string, unknown>} settings
+ */
+function refreshLlmTestInboundHostMruSelect(settings) {
+  const sel = document.getElementById('llm-passthrough-test-inbound-host-mru-select');
+  const customIn = document.getElementById('llm-passthrough-test-inbound-host-custom-input');
+  if (!sel) return;
+  const mru = sanitizeLlmPassthroughTestInboundHostMru(settings.llmPassthroughTestInboundHostMru);
+  const stored = String(settings.llmPassthroughTestInboundHostname || '').trim();
+  sel.textContent = '';
+  for (const host of mru) {
+    const opt = document.createElement('option');
+    opt.value = host;
+    opt.textContent = host;
+    sel.appendChild(opt);
+  }
+  const optNew = document.createElement('option');
+  optNew.value = LLM_INBOUND_TEST_HOST_MRU_NEW;
+  optNew.textContent = 'New host…';
+  sel.appendChild(optNew);
+  const lowStored = stored.toLowerCase();
+  const isPresetBuiltin = stored === '127.0.0.1' || lowStored === 'localhost';
+  const canon = !isPresetBuiltin ? findCanonicalInboundHostMruMatch(mru, stored) : null;
+  if (canon) {
+    sel.value = canon;
+    if (customIn) customIn.value = '';
+  } else if (!isPresetBuiltin && stored) {
+    sel.value = LLM_INBOUND_TEST_HOST_MRU_NEW;
+    if (customIn) customIn.value = stored;
+  } else {
+    sel.value = LLM_INBOUND_TEST_HOST_MRU_NEW;
+    if (customIn) customIn.value = '';
+  }
+}
+
+/**
+ * Resolved custom inbound hostname from MRU select + New input (preset must be "custom").
+ * @returns {string | null}
+ */
+function resolveLlmTestInboundCustomHostnameFromInputs() {
+  const mruSel = document.getElementById('llm-passthrough-test-inbound-host-mru-select');
+  const customIn = document.getElementById('llm-passthrough-test-inbound-host-custom-input');
+  if (mruSel && mruSel.value && mruSel.value !== LLM_INBOUND_TEST_HOST_MRU_NEW) {
+    return normalizeLlmPassthroughTestInboundHostname(mruSel.value);
+  }
+  return normalizeLlmPassthroughTestInboundHostname(customIn ? customIn.value : '');
+}
+
 async function persistLlmTestRetrievalSettingsFromInputs() {
   const algoEl = document.getElementById('llm-passthrough-search-algorithm-select');
   const timeoutEl = document.getElementById('llm-passthrough-timeout-input');
   if (!algoEl || !timeoutEl) return;
   const llmAlgo = algoEl.value || 'hybrid';
-  const llmTimeoutMs = parseInt(timeoutEl.value, 10);
+  const llmTimeoutSec = parseInt(timeoutEl.value, 10);
+  const llmTimeoutMs = llmTimeoutSec * 1000;
   if (!['hybrid', 'bm25', 'tfidf', 'vector'].includes(llmAlgo)) return;
-  if (!Number.isFinite(llmTimeoutMs) || llmTimeoutMs < 5000 || llmTimeoutMs > 600000) return;
+  if (!Number.isFinite(llmTimeoutSec) || llmTimeoutSec < 5 || llmTimeoutSec > 600) return;
   try {
     const settings = await window.electronAPI.getSettings();
     settings.llmPassthroughTimeoutMs = llmTimeoutMs;
     settings.llmPassthroughSearchAlgorithm = llmAlgo;
+    const preset = document.getElementById('llm-passthrough-test-inbound-host-preset-select');
+    let hostPatch = null;
+    if (preset) {
+      if (preset.value === '127.0.0.1') hostPatch = '127.0.0.1';
+      else if (preset.value === 'localhost') hostPatch = 'localhost';
+      else {
+        hostPatch = resolveLlmTestInboundCustomHostnameFromInputs();
+      }
+      if (hostPatch != null) {
+        settings.llmPassthroughTestInboundHostname = hostPatch;
+        if (preset.value === 'custom') {
+          recordLlmPassthroughTestInboundHostMru(settings, hostPatch);
+        }
+      }
+    }
+    const transportEl = document.getElementById('llm-passthrough-test-transport-select');
+    if (transportEl) {
+      settings.llmPassthroughTestTransport =
+        transportEl.value === 'direct-ipc' ? 'direct-ipc' : 'inbound-http';
+    }
     await window.electronAPI.saveSettings(settings);
     window.electronAPI.notifyTraySettingsChanged();
+    if (preset && preset.value === 'custom' && hostPatch != null) {
+      refreshLlmTestInboundHostMruSelect(settings);
+    }
   } catch (e) {
     console.error('persistLlmTestRetrievalSettingsFromInputs', e);
   }
@@ -2576,16 +3392,18 @@ async function persistLlmTestRetrievalSettingsFromInputs() {
 
 /**
  * @param {{ inboundPassthrough?: object } | null | undefined} status from getMCPServerStatus()
+ * @param {unknown} [inboundHostname] host for the test client URL only (listener ports unchanged)
  * @returns {{ kind: 'openai' | 'ollama', url: string } | null}
  */
-function pickInboundLlmPassthroughEndpoint(status) {
+function pickInboundLlmPassthroughEndpoint(status, inboundHostname) {
+  const hostInUrl = formatHostnameForInboundTestUrl(inboundHostname);
   const p = status && status.inboundPassthrough;
   if (!p || p.masterEnabled !== true) return null;
   if (p.openai && p.openai.enabled === true && p.openai.listening === true && p.openai.port) {
-    return { kind: 'openai', url: `http://127.0.0.1:${p.openai.port}/v1/chat/completions` };
+    return { kind: 'openai', url: `http://${hostInUrl}:${p.openai.port}/v1/chat/completions` };
   }
   if (p.ollama && p.ollama.enabled === true && p.ollama.listening === true && p.ollama.port) {
-    return { kind: 'ollama', url: `http://127.0.0.1:${p.ollama.port}/api/chat` };
+    return { kind: 'ollama', url: `http://${hostInUrl}:${p.ollama.port}/api/chat` };
   }
   return null;
 }
@@ -2619,11 +3437,42 @@ function inboundPassthroughErrorMessage(statusCode, data) {
   return `HTTP ${statusCode}`;
 }
 
+function resetLlmPassthroughSendButtonLabel(sendBtn) {
+  if (sendBtn) sendBtn.textContent = LLM_PASSTHROUGH_SEND_DEFAULT_LABEL;
+}
+
+function setLlmPassthroughSendButtonToCancel(sendBtn) {
+  if (!sendBtn) return;
+  sendBtn.textContent = 'Cancel';
+  sendBtn.disabled = false;
+}
+
+function runLlmPassthroughSendCancel() {
+  const fn = llmPassthroughSendCancelFn;
+  llmPassthroughSendCancelFn = null;
+  if (typeof fn === 'function') fn();
+}
+
+function beginLlmPassthroughSendCancellable(sendBtn, cancelFn) {
+  llmPassthroughSendInFlight = true;
+  llmPassthroughSendUserCancelled = false;
+  llmPassthroughSendCancelFn = cancelFn;
+  setLlmPassthroughSendButtonToCancel(sendBtn);
+}
+
+function endLlmPassthroughSendUi(sendBtn) {
+  if (!llmPassthroughSendInFlight) return;
+  llmPassthroughSendInFlight = false;
+  llmPassthroughSendCancelFn = null;
+  resetLlmPassthroughSendButtonLabel(sendBtn);
+}
+
 /** @param {Record<string, unknown>} [overrides] Merged on top of getSettings() for live Server-tab edits. */
 async function refreshLlmPassthroughPanel(overrides) {
   const hint = document.getElementById('llm-passthrough-config-hint');
   const sendBtn = document.getElementById('llm-passthrough-send-btn');
   if (!hint || !sendBtn) return;
+  if (llmPassthroughSendInFlight) return;
   try {
     const settings = await window.electronAPI.getSettings();
     const s =
@@ -2653,15 +3502,26 @@ async function refreshLlmPassthroughPanel(overrides) {
       sendBtn.disabled = true;
       return;
     }
+    const transportSelect = document.getElementById('llm-passthrough-test-transport-select');
+    let transport = s.llmPassthroughTestTransport === 'direct-ipc' ? 'direct-ipc' : 'inbound-http';
+    if (transportSelect) {
+      transport = transportSelect.value === 'direct-ipc' ? 'direct-ipc' : 'inbound-http';
+    }
+    if (transport === 'direct-ipc') {
+      hint.textContent = `Ready: upstream ${prov} at ${base}, model "${model}". Test transport is Direct IPC — same retrieval and proxy as inbound HTTP, without a loopback POST. Active namespace is applied when set.`;
+      sendBtn.disabled = false;
+      return;
+    }
     let mcpStatus = null;
     try {
       mcpStatus = await window.electronAPI.getMCPServerStatus();
     } catch {
       mcpStatus = null;
     }
-    const inbound = pickInboundLlmPassthroughEndpoint(mcpStatus);
+    const inboundHost = String(s.llmPassthroughTestInboundHostname || '127.0.0.1').trim() || '127.0.0.1';
+    const inbound = pickInboundLlmPassthroughEndpoint(mcpStatus, inboundHost);
     if (!inbound) {
-      hint.textContent = `Upstream: ${prov} at ${base}, model "${model}". This tab calls inbound HTTP only: under Settings → Server, enable at least one listener (OpenAI-compatible and/or Ollama-style) on a free port until Server status shows listening.`;
+      hint.textContent = `Upstream: ${prov} at ${base}, model "${model}". Inbound HTTP test: enable at least one listener under Settings → Server until status shows listening — or switch Test transport to Direct IPC to skip HTTP.`;
       sendBtn.disabled = true;
       return;
     }
@@ -2669,7 +3529,7 @@ async function refreshLlmPassthroughPanel(overrides) {
       inbound.kind === 'openai'
         ? `OpenAI-compatible POST ${inbound.url}`
         : `Ollama-style POST ${inbound.url}`;
-    hint.textContent = `Ready: upstream ${prov} at ${base}, model "${model}". End-to-end test: ${inboundLabel} (same path external clients use). Active namespace is sent as X-Froggy-Namespace when set.`;
+    hint.textContent = `Ready: upstream ${prov} at ${base}, model "${model}". End-to-end test: ${inboundLabel} (host from “Inbound test target”; external clients may use 127.0.0.1 or another host). Active namespace is sent as X-Froggy-Namespace when set.`;
     sendBtn.disabled = false;
   } catch (e) {
     hint.textContent = 'Could not load settings for LLM Passthrough.';
@@ -2873,13 +3733,47 @@ function applyAllSettingsModalFieldsToSettings(settings) {
   const ollamaModel = d.ollama.model.trim();
   const openAiModel = d.openai.model.trim();
 
-  const llmTimeoutMs = parseInt(llmTimeoutInput.value, 10) || 120000;
+  const llmTimeoutSecRaw = parseInt(llmTimeoutInput.value, 10);
+  const llmTimeoutSec = Number.isFinite(llmTimeoutSecRaw) ? llmTimeoutSecRaw : 120;
+  const llmTimeoutMs = llmTimeoutSec * 1000;
   const llmAlgo = llmAlgoSelect.value || 'hybrid';
   if (!['hybrid', 'bm25', 'tfidf', 'vector'].includes(llmAlgo)) {
     return { ok: false, message: 'Invalid LLM Passthrough search algorithm.' };
   }
-  if (llmTimeoutMs < 5000 || llmTimeoutMs > 600000) {
-    return { ok: false, message: 'LLM Passthrough timeout must be between 5000 and 600000 ms.' };
+  if (llmTimeoutSec < 5 || llmTimeoutSec > 600) {
+    return { ok: false, message: 'LLM Passthrough timeout must be between 5 and 600 seconds.' };
+  }
+  const llmInboundPreset = document.getElementById('llm-passthrough-test-inbound-host-preset-select');
+  const llmInboundCustom = document.getElementById('llm-passthrough-test-inbound-host-custom-input');
+  const llmInboundMru = document.getElementById('llm-passthrough-test-inbound-host-mru-select');
+  if (llmInboundPreset) {
+    let inboundTestHost = '';
+    if (llmInboundPreset.value === '127.0.0.1') inboundTestHost = '127.0.0.1';
+    else if (llmInboundPreset.value === 'localhost') inboundTestHost = 'localhost';
+    else {
+      if (
+        llmInboundMru &&
+        llmInboundMru.value &&
+        llmInboundMru.value !== LLM_INBOUND_TEST_HOST_MRU_NEW
+      ) {
+        inboundTestHost = normalizeLlmPassthroughTestInboundHostname(llmInboundMru.value);
+      } else {
+        inboundTestHost = normalizeLlmPassthroughTestInboundHostname(
+          llmInboundCustom ? llmInboundCustom.value : ''
+        );
+      }
+      if (!inboundTestHost) {
+        return {
+          ok: false,
+          message:
+            'Inbound test target: choose loopback or localhost, or pick a recent custom host / enter a valid hostname or IP (no URL path).'
+        };
+      }
+    }
+    settings.llmPassthroughTestInboundHostname = inboundTestHost;
+    if (llmInboundPreset.value === 'custom') {
+      recordLlmPassthroughTestInboundHostMru(settings, inboundTestHost);
+    }
   }
   if (llmEnabled) {
     const activeBase = llmProvider === 'openai' ? openAiBase : ollamaBase;
@@ -2912,6 +3806,12 @@ function applyAllSettingsModalFieldsToSettings(settings) {
   settings.llmPassthroughApiKey = activeKeyForLegacy;
   settings.llmPassthroughTimeoutMs = llmTimeoutMs;
   settings.llmPassthroughSearchAlgorithm = llmAlgo;
+
+  const llmTransportSelect = document.getElementById('llm-passthrough-test-transport-select');
+  if (llmTransportSelect) {
+    settings.llmPassthroughTestTransport =
+      llmTransportSelect.value === 'direct-ipc' ? 'direct-ipc' : 'inbound-http';
+  }
 
   const ptOllamaEn = document.getElementById('settings-passthrough-ollama-listen-enabled-input');
   const ptOllamaPort = document.getElementById('settings-passthrough-ollama-listen-port-input');
@@ -3817,8 +4717,7 @@ function setupSettingsNavigation() {
   });
 }
 
-// Markdown rendering is now handled by the marked library via electronAPI.renderMarkdown()
-// The old convertMarkdownToHTML function has been removed in favor of marked
+// Help loads prebuilt USAGE.html. LLM replies use electronAPI.renderMarkdown() (marked in main) + sandboxed iframe.
 
 window.sendEndpointTest = async function() {
   if (!currentTestEndpoint || !currentTestBaseUrl) return;

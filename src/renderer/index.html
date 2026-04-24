@@ -278,45 +278,89 @@
         <!-- LLM Passthrough test canvas -->
         <div class="canvas" id="llm-canvas" style="display: none;">
           <h2>LLM</h2>
-          <p style="margin: 0 0 16px 0; font-size: 14px; color: #616161; max-width: 900px;">
-            Send a test prompt as an <strong>end-to-end</strong> check: the UI POSTs to this app's inbound passthrough URL (OpenAI-compatible <code>/v1/chat/completions</code> or Ollama-style <code>/api/chat</code>), which runs the same retrieval as Search, injects chunks, then forwards to your configured upstream. Under Settings → <strong>Server</strong>, enable <strong>LLM Passthrough</strong> and at least one inbound listener (ports below).
-          </p>
-          <div style="margin-bottom: 20px; padding: 16px; background: #f9f9f9; border: 1px solid #e0e0e0; border-radius: 4px; max-width: 900px;">
-            <h3 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: #424242;">Retrieval &amp; timeout (this test)</h3>
-            <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: center;">
-              <div>
-                <label for="llm-passthrough-search-algorithm-select" style="font-weight: 500; color: #616161; margin-right: 8px;">Search algorithm</label>
-                <select id="llm-passthrough-search-algorithm-select" style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;">
-                  <option value="hybrid">Hybrid (BM25 + Vector)</option>
-                  <option value="bm25">BM25</option>
-                  <option value="tfidf">TF-IDF</option>
-                  <option value="vector">Vector Similarity</option>
-                </select>
-              </div>
-              <div>
-                <label for="llm-passthrough-timeout-input" style="font-weight: 500; color: #616161; margin-right: 8px;">Request timeout (ms)</label>
-                <input type="number" id="llm-passthrough-timeout-input" min="5000" max="600000" step="1000" value="120000" style="width: 110px; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;" />
-              </div>
-            </div>
-            <p style="margin: 12px 0 0 0; font-size: 12px; color: #757575; line-height: 1.5;">
-              Chunk count and ranking follow your <strong>Retrieval</strong> and <strong>Metadata &amp; Filtering</strong> settings. Top K and score thresholds apply here as well. Values are saved automatically when you change them.
+          <div class="llm-canvas-tablist" role="tablist" aria-label="LLM sections">
+            <button type="button" class="llm-canvas-tab is-active" role="tab" id="llm-canvas-tab-settings-btn" aria-controls="llm-canvas-panel-settings" aria-selected="true">Settings</button>
+            <button type="button" class="llm-canvas-tab" role="tab" id="llm-canvas-tab-chat-btn" aria-controls="llm-canvas-panel-chat" aria-selected="false" tabindex="-1">Chat</button>
+          </div>
+          <div id="llm-canvas-panel-settings" class="llm-canvas-tabpanel" role="tabpanel" aria-labelledby="llm-canvas-tab-settings-btn">
+            <p style="margin: 0 0 16px 0; font-size: 14px; color: #616161; max-width: 900px;">
+              Multi-turn <strong>end-to-end</strong> check: each send appends your message and runs the full conversation through the same RAG + upstream path (inbound HTTP or direct IPC). Retrieval uses the <strong>latest user</strong> turn; earlier turns stay in context for the model. Under Settings → <strong>Server</strong>, enable <strong>LLM Passthrough</strong>; for HTTP you also need at least one inbound listener (ports below).
             </p>
+            <div style="margin-bottom: 20px; padding: 16px; background: #f9f9f9; border: 1px solid #e0e0e0; border-radius: 4px; max-width: 900px;">
+              <h3 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: #424242;">Retrieval &amp; timeout (this test)</h3>
+              <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: center;">
+                <div>
+                  <label for="llm-passthrough-test-transport-select" style="font-weight: 500; color: #616161; margin-right: 8px;">Test transport</label>
+                  <select id="llm-passthrough-test-transport-select" style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;">
+                    <option value="inbound-http">Inbound HTTP (loopback URL)</option>
+                    <option value="direct-ipc">Direct IPC (main process)</option>
+                  </select>
+                </div>
+                <div id="llm-passthrough-inbound-test-host-section" style="display: flex; flex-wrap: wrap; gap: 20px; align-items: center;">
+                  <div>
+                    <label for="llm-passthrough-test-inbound-host-preset-select" style="font-weight: 500; color: #616161; margin-right: 8px;">Inbound test target</label>
+                    <select id="llm-passthrough-test-inbound-host-preset-select" style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;">
+                      <option value="127.0.0.1">Loopback (127.0.0.1)</option>
+                      <option value="localhost">Localhost name</option>
+                      <option value="custom">Custom host…</option>
+                    </select>
+                  </div>
+                  <div id="llm-passthrough-test-inbound-host-custom-wrap" style="display: none; flex-wrap: wrap; gap: 12px; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <label for="llm-passthrough-test-inbound-host-mru-select" style="font-weight: 500; color: #616161;">Recent</label>
+                      <select id="llm-passthrough-test-inbound-host-mru-select" style="min-width: 180px; max-width: 280px; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;"></select>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <label for="llm-passthrough-test-inbound-host-custom-input" style="font-weight: 500; color: #616161;">New</label>
+                      <input type="text" id="llm-passthrough-test-inbound-host-custom-input" placeholder="e.g. 10.0.0.5 or [::1]" autocomplete="off" style="width: 200px; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; font-family: inherit;" />
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <label for="llm-passthrough-search-algorithm-select" style="font-weight: 500; color: #616161; margin-right: 8px;">Search algorithm</label>
+                  <select id="llm-passthrough-search-algorithm-select" style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;">
+                    <option value="hybrid">Hybrid (BM25 + Vector)</option>
+                    <option value="bm25">BM25</option>
+                    <option value="tfidf">TF-IDF</option>
+                    <option value="vector">Vector Similarity</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="llm-passthrough-timeout-input" style="font-weight: 500; color: #616161; margin-right: 8px;">Request timeout (s)</label>
+                  <input type="number" id="llm-passthrough-timeout-input" min="5" max="600" step="1" value="120" style="width: 110px; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;" />
+                </div>
+              </div>
+              <p style="margin: 12px 0 0 0; font-size: 12px; color: #757575; line-height: 1.5;">
+                Chunk count and ranking follow your <strong>Retrieval</strong> and <strong>Metadata &amp; Filtering</strong> settings. Top K and score thresholds apply here as well. <strong>Inbound test target</strong> applies only to the HTTP transport (same listener ports); use <code>localhost</code> or another host when debugging name resolution, tunnels, or remote listeners. Custom hosts are remembered in a <strong>5-entry MRU</strong> under Recent. <strong>Direct IPC</strong> skips the local HTTP listener; the retrieved-context preview is filled from the main process. Values are saved automatically when you change them.
+              </p>
+            </div>
+            <div id="llm-passthrough-config-hint" style="margin-bottom: 16px; padding: 12px 14px; background: #fff8e1; border: 1px solid #ffe082; border-radius: 4px; font-size: 13px; color: #5d4037; max-width: 900px;"></div>
           </div>
-          <div id="llm-passthrough-config-hint" style="margin-bottom: 16px; padding: 12px 14px; background: #fff8e1; border: 1px solid #ffe082; border-radius: 4px; font-size: 13px; color: #5d4037;"></div>
-          <div style="margin-bottom: 12px;">
-            <label for="llm-passthrough-prompt" style="display: block; font-weight: 600; margin-bottom: 6px; color: #424242;">Test prompt</label>
-            <textarea id="llm-passthrough-prompt" rows="6" style="width: 100%; max-width: 900px; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; font-family: inherit; resize: vertical;" placeholder="Ask something that should use your ingested documents…"></textarea>
+          <div id="llm-canvas-panel-chat" class="llm-canvas-tabpanel" role="tabpanel" aria-labelledby="llm-canvas-tab-chat-btn" hidden>
+            <div class="llm-tester-chat-toolbar">
+              <div class="llm-tester-chat-toolbar-field">
+                <label for="llm-tester-chat-select">Chat history</label>
+                <select id="llm-tester-chat-select" class="llm-tester-chat-select" title="Switch between saved conversations"></select>
+              </div>
+              <button type="button" class="btn btn-secondary" id="llm-tester-new-chat-btn">New chat</button>
+              <button type="button" class="btn btn-secondary" id="llm-tester-clear-turns-btn">Clear conversation</button>
+            </div>
+            <div id="llm-tester-transcript" class="llm-tester-transcript" aria-label="Conversation transcript"></div>
+            <div style="margin-bottom: 12px;">
+              <label for="llm-passthrough-prompt" style="display: block; font-weight: 600; margin-bottom: 6px; color: #424242;">Your message</label>
+              <textarea id="llm-passthrough-prompt" rows="4" style="width: 100%; max-width: 900px; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; font-family: inherit; resize: vertical;" placeholder="Type the next user message…"></textarea>
+            </div>
+            <div style="margin-bottom: 20px;">
+              <button type="button" class="btn btn-primary" id="llm-passthrough-send-btn">Send (RAG on latest turn)</button>
+              <span id="llm-passthrough-send-status" style="margin-left: 12px; font-size: 13px; color: #757575;"></span>
+            </div>
+            <h3 style="margin: 0 0 8px 0; font-size: 16px; color: #2c3e50;">Latest reply (markdown)</h3>
+            <div id="llm-passthrough-reply" class="llm-passthrough-reply-container" style="min-height: 120px; max-width: 900px; padding: 0; background: #fafafa; border: 1px solid #e0e0e0; border-radius: 4px; overflow: hidden;"></div>
+            <details style="margin-top: 20px; max-width: 900px;">
+              <summary style="cursor: pointer; font-weight: 600; color: #424242;">Retrieved context (preview)</summary>
+              <pre id="llm-passthrough-context-preview" style="margin-top: 10px; padding: 12px; background: #f5f5f5; border: 1px solid #e0e0e0; border-radius: 4px; font-size: 12px; white-space: pre-wrap; max-height: 240px; overflow-y: auto;"></pre>
+            </details>
           </div>
-          <div style="margin-bottom: 20px;">
-            <button type="button" class="btn btn-primary" id="llm-passthrough-send-btn">Send with RAG context</button>
-            <span id="llm-passthrough-send-status" style="margin-left: 12px; font-size: 13px; color: #757575;"></span>
-          </div>
-          <h3 style="margin: 0 0 8px 0; font-size: 16px; color: #2c3e50;">Model reply</h3>
-          <div id="llm-passthrough-reply" style="min-height: 80px; max-width: 900px; padding: 14px; background: #fafafa; border: 1px solid #e0e0e0; border-radius: 4px; white-space: pre-wrap; font-size: 14px; color: #212121;"></div>
-          <details style="margin-top: 20px; max-width: 900px;">
-            <summary style="cursor: pointer; font-weight: 600; color: #424242;">Retrieved context (preview)</summary>
-            <pre id="llm-passthrough-context-preview" style="margin-top: 10px; padding: 12px; background: #f5f5f5; border: 1px solid #e0e0e0; border-radius: 4px; font-size: 12px; white-space: pre-wrap; max-height: 240px; overflow-y: auto;"></pre>
-          </details>
         </div>
 
         <!-- Server Canvas -->
@@ -740,7 +784,7 @@
                       <label for="settings-llm-passthrough-enabled-input" style="font-weight: 500; color: #616161; cursor: pointer;">Enable LLM Passthrough</label>
                     </div>
                     <p style="margin: 0 0 16px 0; font-size: 13px; color: #616161; line-height: 1.5;">
-                      When enabled, the inbound passthrough HTTP API forwards RAG-augmented chat to the upstream using the API style and endpoint below. The sidebar <strong>LLM</strong> tab exercises that same inbound path end-to-end. Ollama and OpenAI-compatible URLs and models are stored separately so you can switch styles without retyping.
+                      When enabled, the inbound passthrough HTTP API forwards RAG-augmented chat to the upstream using the API style and endpoint below. The sidebar <strong>LLM</strong> tab can run the same pipeline via that inbound URL or <strong>Direct IPC</strong> (no loopback HTTP). Ollama and OpenAI-compatible URLs and models are stored separately so you can switch styles without retyping.
                     </p>
                     <div style="padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px solid #e0e0e0;">
                       <h5 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #424242;">Provider</h5>
@@ -987,6 +1031,18 @@
         </div>
       </div>
     </div>
+
+    <footer id="app-status-bar" class="app-status-bar" role="status" aria-live="polite">
+      <div class="app-status-bar-inner">
+        <span class="app-status-item" id="status-bar-namespace" title="Active data namespace"></span>
+        <span class="app-status-sep" aria-hidden="true"></span>
+        <span class="app-status-item" id="status-bar-server" title="MCP HTTP server"></span>
+        <span class="app-status-sep" aria-hidden="true"></span>
+        <span class="app-status-item" id="status-bar-passthrough" title="Inbound LLM passthrough (Settings → Server)"></span>
+        <span class="app-status-sep" aria-hidden="true"></span>
+        <span class="app-status-item" id="status-bar-store" title="Vector store (active namespace)"></span>
+      </div>
+    </footer>
   </div>
 
   <script src="app.js"></script>

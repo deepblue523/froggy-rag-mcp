@@ -68,10 +68,29 @@ function buildMessages(systemPreamble, userPrompt) {
   ];
 }
 
-async function postJson(url, body, headers, timeoutMs) {
+/**
+ * @param {string} url
+ * @param {object} body
+ * @param {Record<string, string>} headers
+ * @param {number} timeoutMs
+ * @param {AbortSignal} [abortSignal] When aborted, the request is cancelled (in addition to timeout).
+ */
+async function postJson(url, body, headers, timeoutMs, abortSignal) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
+  const onExternalAbort = () => {
+    controller.abort();
+  };
   try {
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        controller.abort();
+        const err = new Error('Aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+      abortSignal.addEventListener('abort', onExternalAbort);
+    }
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -101,6 +120,9 @@ async function postJson(url, body, headers, timeoutMs) {
     return data;
   } finally {
     clearTimeout(t);
+    if (abortSignal) {
+      abortSignal.removeEventListener('abort', onExternalAbort);
+    }
   }
 }
 
@@ -307,7 +329,7 @@ function injectRagIntoMessages(messages, contextForModel) {
  * Full non-streaming proxy: RAG over last user turn, then forward to configured upstream. Returns upstream JSON and metadata.
  * @param {*} ragService
  * @param {{ messages?: unknown[], model?: string, temperature?: number, max_tokens?: number, stream?: boolean }} inboundBody
- * @param {{ namespace?: string, topK?: number, algorithm?: string }} [options]
+ * @param {{ namespace?: string, topK?: number, algorithm?: string, abortSignal?: AbortSignal }} [options]
  * @returns {Promise<{ upstreamJson: object, contextBlock: string, warnings: string[], errors: string[], scope?: object }>}
  */
 async function completeChatProxy(ragService, inboundBody, options = {}) {
@@ -368,6 +390,9 @@ async function completeChatProxy(ragService, inboundBody, options = {}) {
       ? String(options.namespace).trim()
       : undefined;
 
+  const upstreamAbortSignal =
+    options.abortSignal instanceof AbortSignal ? options.abortSignal : undefined;
+
   const searchOut = await searchCorpusInNamespaces(ragService, {
     namespace: namespaceArg,
     query: ragQuery,
@@ -400,7 +425,7 @@ async function completeChatProxy(ragService, inboundBody, options = {}) {
     if (inboundBody && inboundBody.options && typeof inboundBody.options === 'object') {
       body.options = inboundBody.options;
     }
-    upstreamJson = await postJson(url, body, {}, timeoutMs);
+    upstreamJson = await postJson(url, body, {}, timeoutMs, upstreamAbortSignal);
   } else {
     const url = `${baseUrl}/chat/completions`;
     const headers = {};
@@ -419,15 +444,27 @@ async function completeChatProxy(ragService, inboundBody, options = {}) {
     if (typeof inboundBody.max_tokens === 'number' && Number.isFinite(inboundBody.max_tokens)) {
       body.max_tokens = inboundBody.max_tokens;
     }
-    upstreamJson = await postJson(url, body, headers, timeoutMs);
+    upstreamJson = await postJson(url, body, headers, timeoutMs, upstreamAbortSignal);
   }
 
   return { upstreamJson, contextBlock, warnings, errors, scope };
 }
 
+/**
+ * Extract assistant text from upstream JSON after completeChatProxy (shape matches inbound HTTP body).
+ * @param {Record<string, unknown>} settings
+ * @param {unknown} upstreamJson
+ */
+function extractPassthroughUpstreamReply(settings, upstreamJson) {
+  const { provider } = getActiveLlmPassthroughUpstream(settings);
+  if (provider === 'openai') return extractOpenAiStyleReply(upstreamJson);
+  return extractOllamaReply(upstreamJson);
+}
+
 module.exports = {
   runLlmPassthrough,
   completeChatProxy,
+  extractPassthroughUpstreamReply,
   formatSearchHitsForContext,
   normalizeChatMessages,
   getRagQueryFromMessages,

@@ -52,6 +52,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Settings
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
+  /** Same RAG + upstream as inbound HTTP, invoked in main (no loopback fetch). */
+  llmPassthroughTestDirect: (payload) => ipcRenderer.invoke('llm-passthrough-test-direct', payload),
+  /** Aborts the in-flight direct IPC LLM test (upstream HTTP in main). */
+  llmPassthroughTestDirectCancel: () => ipcRenderer.send('llm-passthrough-test-direct-cancel'),
   notifyTraySettingsChanged: () => ipcRenderer.send('tray-settings-changed'),
   
   // Clipboard
@@ -62,6 +66,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // File reading - now returns HTML directly
   readUsageFile: () => ipcRenderer.invoke('read-usage-file'),
+
+  /** Full HTML document string for sandboxed markdown iframe (LLM reply, etc.). */
+  renderMarkdown: (markdown) => ipcRenderer.invoke('render-markdown', markdown),
   
   // Path checking
   isDirectory: (filePath) => ipcRenderer.invoke('is-directory', filePath),
