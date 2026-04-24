@@ -11,6 +11,20 @@ const { getAppSettingsPath } = require('../../paths');
 const { splitSettingsForPersist, writeAppAndNamespace, readMergedSettingsFromDisk } = require('../../settings-files');
 const { createLlmChunkAdvisor } = require('./llm-chunk-advisor');
 
+/** Extensions returned by directory scans and accepted by directory watchers (keep aligned with DocumentProcessor.processFile). */
+const SUPPORTED_INGEST_EXTENSIONS = [
+  '.txt',
+  '.pdf',
+  '.docx',
+  '.xlsx',
+  '.csv',
+  '.html',
+  '.htm',
+  '.md',
+  '.markdown',
+  '.mdx'
+];
+
 /** Compare two paths for equality (case-insensitive on Windows). */
 function pathsEqual(a, b) {
   const na = path.resolve(a);
@@ -288,7 +302,6 @@ class RAGService extends EventEmitter {
   }
 
   findSupportedFiles(dirPath, recursive) {
-    const supportedExts = ['.txt', '.pdf', '.docx', '.xlsx', '.csv', '.html', '.htm'];
     const files = [];
 
     const scanDir = (dir) => {
@@ -298,7 +311,7 @@ class RAGService extends EventEmitter {
           const fullPath = path.join(dir, entry.name);
           if (entry.isFile()) {
             const ext = path.extname(entry.name).toLowerCase();
-            if (supportedExts.includes(ext)) {
+            if (SUPPORTED_INGEST_EXTENSIONS.includes(ext)) {
               files.push(fullPath);
             }
           } else if (entry.isDirectory() && recursive) {
@@ -699,7 +712,7 @@ class RAGService extends EventEmitter {
           }
         }
         const ext = path.extname(filePath).toLowerCase();
-        if (['.txt', '.pdf', '.docx', '.xlsx', '.csv', '.html', '.htm'].includes(ext)) {
+        if (SUPPORTED_INGEST_EXTENSIONS.includes(ext)) {
           console.log(`[Watcher] Queueing new file: ${filePath}`);
           this.addToQueue(filePath, 'file');
         }
@@ -725,7 +738,7 @@ class RAGService extends EventEmitter {
           }
         }
         const ext = path.extname(filePath).toLowerCase();
-        if (['.txt', '.pdf', '.docx', '.xlsx', '.csv', '.html', '.htm'].includes(ext)) {
+        if (SUPPORTED_INGEST_EXTENSIONS.includes(ext)) {
           console.log(`[Watcher] Queueing changed file: ${filePath}`);
           this.addToQueue(filePath, 'file');
         }
@@ -736,7 +749,7 @@ class RAGService extends EventEmitter {
       console.log(`[Watcher] File deleted: ${filePath}`);
       // File was deleted from watched directory, remove from vector store
       const ext = path.extname(filePath).toLowerCase();
-      if (['.txt', '.pdf', '.docx', '.xlsx', '.csv', '.html', '.htm'].includes(ext)) {
+      if (SUPPORTED_INGEST_EXTENSIONS.includes(ext)) {
         const fileId = this.getFileId(filePath);
         this.vectorStore.deleteDocument(fileId);
         // Emit event to notify UI of vector store change
