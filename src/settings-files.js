@@ -143,11 +143,19 @@ function getDefaultSettings() {
     minimizeToTray: false,
     llmPassthroughEnabled: false,
     llmPassthroughProvider: 'ollama',
+    /** @deprecated use per-provider fields; kept for one-shot migration from older settings.json */
     llmPassthroughBaseUrl: 'http://127.0.0.1:11434',
     llmPassthroughApiKey: '',
     llmPassthroughModel: '',
+    llmPassthroughOllamaBaseUrl: 'http://127.0.0.1:11434',
+    llmPassthroughOllamaModel: '',
+    llmPassthroughOllamaApiKey: '',
+    llmPassthroughOpenAiBaseUrl: '',
+    llmPassthroughOpenAiModel: '',
+    llmPassthroughOpenAiApiKey: '',
     llmPassthroughTimeoutMs: 120000,
     llmPassthroughSearchAlgorithm: 'hybrid',
+    /** @deprecated mirrors llmPassthroughEnabled; kept for older settings.json */
     passthroughListenEnabled: false,
     passthroughOllamaListenEnabled: false,
     passthroughOllamaListenPort: 11435,
@@ -160,13 +168,45 @@ function getDefaultSettings() {
  * Read merged app + namespace settings from disk without constructing RAGService
  * (avoids blocking the renderer on heavy service startup).
  */
+/**
+ * Copy legacy single-endpoint fields into per-provider slots once (when app settings never had the new keys).
+ * @param {Record<string, unknown>} merged
+ * @param {Record<string, unknown>} appLayer
+ */
+function migrateLegacyLlmPassthroughEndpoints(merged, appLayer) {
+  const hasNewKey =
+    Object.prototype.hasOwnProperty.call(appLayer, 'llmPassthroughOllamaBaseUrl') ||
+    Object.prototype.hasOwnProperty.call(appLayer, 'llmPassthroughOpenAiBaseUrl');
+  if (hasNewKey) return;
+  const legacyBase = merged.llmPassthroughBaseUrl;
+  const legacyModel = merged.llmPassthroughModel;
+  const legacyKey = merged.llmPassthroughApiKey;
+  const prov = merged.llmPassthroughProvider === 'openai' ? 'openai' : 'ollama';
+  if (prov === 'openai') {
+    merged.llmPassthroughOpenAiBaseUrl = String(legacyBase || '').trim();
+    merged.llmPassthroughOpenAiModel = String(legacyModel || '').trim();
+    merged.llmPassthroughOpenAiApiKey = String(legacyKey || '').trim();
+  } else {
+    merged.llmPassthroughOllamaBaseUrl =
+      legacyBase != null && String(legacyBase).trim() !== ''
+        ? String(legacyBase).trim()
+        : 'http://127.0.0.1:11434';
+    merged.llmPassthroughOllamaModel = String(legacyModel || '').trim();
+    merged.llmPassthroughOllamaApiKey = String(legacyKey || '').trim();
+  }
+}
+
 function readMergedSettingsFromDisk(dataDir, appSettingsPath) {
   const legacyPath = path.join(dataDir, 'settings.json');
   const namespacePath = path.join(dataDir, 'namespace.json');
   migrateLegacySettingsJson(legacyPath, appSettingsPath, namespacePath);
   const appLayer = readJsonObject(appSettingsPath);
   const namespaceLayer = readJsonObject(namespacePath);
-  return mergeSettingsLayers(getDefaultSettings(), appLayer, namespaceLayer);
+  const merged = mergeSettingsLayers(getDefaultSettings(), appLayer, namespaceLayer);
+  migrateLegacyLlmPassthroughEndpoints(merged, appLayer);
+  // Inbound HTTP master toggle was merged into llmPassthroughEnabled; keep stored flag in sync.
+  merged.passthroughListenEnabled = merged.llmPassthroughEnabled === true;
+  return merged;
 }
 
 module.exports = {
@@ -178,6 +218,7 @@ module.exports = {
   writeAppAndNamespace,
   mergeWindowStateFileIntoAppSettings,
   migrateLegacySettingsJson,
+  migrateLegacyLlmPassthroughEndpoints,
   getDefaultSettings,
   readMergedSettingsFromDisk
 };

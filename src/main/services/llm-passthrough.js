@@ -8,6 +8,29 @@ function trimTrailingSlash(url) {
   return String(url || '').replace(/\/+$/, '');
 }
 
+/**
+ * Resolved upstream for the selected API style (per-provider URLs/models/keys, with legacy field fallback).
+ * @param {Record<string, unknown>} settings
+ * @returns {{ provider: 'ollama' | 'openai', baseUrl: string, model: string, apiKey: string }}
+ */
+function getActiveLlmPassthroughUpstream(settings) {
+  const prov = settings.llmPassthroughProvider === 'openai' ? 'openai' : 'ollama';
+  if (prov === 'openai') {
+    const baseUrl = trimTrailingSlash(
+      String(settings.llmPassthroughOpenAiBaseUrl || settings.llmPassthroughBaseUrl || '')
+    );
+    const model = String(settings.llmPassthroughOpenAiModel ?? settings.llmPassthroughModel ?? '').trim();
+    const apiKey = String(settings.llmPassthroughOpenAiApiKey ?? settings.llmPassthroughApiKey ?? '').trim();
+    return { provider: 'openai', baseUrl, model, apiKey };
+  }
+  const baseUrl = trimTrailingSlash(
+    String(settings.llmPassthroughOllamaBaseUrl || settings.llmPassthroughBaseUrl || '')
+  );
+  const model = String(settings.llmPassthroughOllamaModel ?? settings.llmPassthroughModel ?? '').trim();
+  const apiKey = String(settings.llmPassthroughOllamaApiKey ?? settings.llmPassthroughApiKey ?? '').trim();
+  return { provider: 'ollama', baseUrl, model, apiKey };
+}
+
 function formatSearchHitsForContext(results) {
   if (!results || !results.length) {
     return '';
@@ -110,12 +133,9 @@ const ALLOWED_ALGORITHMS = new Set(['hybrid', 'bm25', 'tfidf', 'vector']);
 async function runLlmPassthrough(ragService, userPrompt, options = {}) {
   const settings = ragService.getSettings();
   if (!settings.llmPassthroughEnabled) {
-    throw new Error('LLM Passthrough is disabled. Enable it in Settings → LLM Passthrough.');
+    throw new Error('LLM Passthrough is disabled. Enable it under Settings → Server.');
   }
-  const provider = settings.llmPassthroughProvider === 'openai' ? 'openai' : 'ollama';
-  const baseUrl = trimTrailingSlash(settings.llmPassthroughBaseUrl || '');
-  const model = String(settings.llmPassthroughModel || '').trim();
-  const apiKey = String(settings.llmPassthroughApiKey || '').trim();
+  const { provider, baseUrl, model, apiKey } = getActiveLlmPassthroughUpstream(settings);
   const timeoutMs =
     Number.isFinite(settings.llmPassthroughTimeoutMs) && settings.llmPassthroughTimeoutMs > 0
       ? settings.llmPassthroughTimeoutMs
@@ -293,12 +313,10 @@ function injectRagIntoMessages(messages, contextForModel) {
 async function completeChatProxy(ragService, inboundBody, options = {}) {
   const settings = ragService.getSettings();
   if (!settings.llmPassthroughEnabled) {
-    throw new Error('LLM Passthrough is disabled. Enable it in Settings → LLM Passthrough.');
+    throw new Error('LLM Passthrough is disabled. Enable it under Settings → Server.');
   }
-  const outbound = settings.llmPassthroughProvider === 'openai' ? 'openai' : 'ollama';
-  const baseUrl = trimTrailingSlash(settings.llmPassthroughBaseUrl || '');
-  const defaultModel = String(settings.llmPassthroughModel || '').trim();
-  const apiKey = String(settings.llmPassthroughApiKey || '').trim();
+  const { provider: outbound, baseUrl, model: defaultModel, apiKey } =
+    getActiveLlmPassthroughUpstream(settings);
   const timeoutMs =
     Number.isFinite(settings.llmPassthroughTimeoutMs) && settings.llmPassthroughTimeoutMs > 0
       ? settings.llmPassthroughTimeoutMs
@@ -413,5 +431,6 @@ module.exports = {
   formatSearchHitsForContext,
   normalizeChatMessages,
   getRagQueryFromMessages,
-  injectRagIntoMessages
+  injectRagIntoMessages,
+  getActiveLlmPassthroughUpstream
 };

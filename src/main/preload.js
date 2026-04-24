@@ -43,9 +43,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Search
   search: (query, limit, algorithm, options) => ipcRenderer.invoke('search', query, limit, algorithm, options),
 
-  // LLM Passthrough (RAG + upstream chat)
-  llmPassthroughChat: (prompt) => ipcRenderer.invoke('llm-passthrough-chat', prompt),
-  
   // MCP Server
   startMCPServer: (port) => ipcRenderer.invoke('start-mcp-server', port),
   stopMCPServer: () => ipcRenderer.invoke('stop-mcp-server'),

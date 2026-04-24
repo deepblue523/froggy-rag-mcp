@@ -4,7 +4,7 @@
  */
 
 const express = require('express');
-const { completeChatProxy } = require('./llm-passthrough');
+const { completeChatProxy, getActiveLlmPassthroughUpstream } = require('./llm-passthrough');
 
 function corsMiddleware(req, res, next) {
   res.header('Access-Control-Allow-Origin', '*');
@@ -61,7 +61,8 @@ class PassthroughInboundService {
 
     app.get('/api/tags', (req, res) => {
       try {
-        const model = this.ragService.getSettings().llmPassthroughModel || 'local';
+        const model =
+          getActiveLlmPassthroughUpstream(this.ragService.getSettings()).model || 'local';
         res.json({
           models: [{ name: model, model: model, modified_at: new Date().toISOString(), size: 0, digest: '' }]
         });
@@ -100,7 +101,8 @@ class PassthroughInboundService {
 
     app.get('/v1/models', (req, res) => {
       try {
-        const m = this.ragService.getSettings().llmPassthroughModel || 'default';
+        const m =
+          getActiveLlmPassthroughUpstream(this.ragService.getSettings()).model || 'default';
         res.json({
           object: 'list',
           data: [
@@ -183,7 +185,7 @@ class PassthroughInboundService {
   getStatus() {
     const s = this.ragService.getSettings();
     return {
-      masterEnabled: s.passthroughListenEnabled === true,
+      masterEnabled: s.llmPassthroughEnabled === true,
       ollama: {
         enabled: s.passthroughOllamaListenEnabled === true,
         listening: this._ollamaServer !== null,
@@ -205,7 +207,7 @@ class PassthroughInboundService {
   async syncFromSettings() {
     await this.stopAll();
     const s = this.ragService.getSettings();
-    if (!s.passthroughListenEnabled) {
+    if (!s.llmPassthroughEnabled) {
       return;
     }
 

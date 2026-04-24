@@ -129,6 +129,9 @@ class RAGService extends EventEmitter {
       }
     }
 
+    // Inbound HTTP master was merged into llmPassthroughEnabled; keep legacy flag aligned on every save.
+    this.settings.passthroughListenEnabled = this.settings.llmPassthroughEnabled === true;
+
     this._saveSettingsToDisk();
 
     return this.settings;

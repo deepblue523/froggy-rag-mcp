@@ -351,8 +351,15 @@ function createSplashWindow() {
   splashWindow.loadFile(path.join(__dirname, '..', 'renderer', 'splash.html'), {
     query: { version: appVersion }
   });
-  splashWindow.once('ready-to-show', () => {
+  // Show as soon as the document loads. `ready-to-show` often fires *after* the main
+  // window's `ready-to-show`, so the splash was destroyed while still `show: false`.
+  splashWindow.webContents.once('did-finish-load', () => {
     if (splashWindow && !splashWindow.isDestroyed()) {
+      splashWindow.show();
+    }
+  });
+  splashWindow.once('ready-to-show', () => {
+    if (splashWindow && !splashWindow.isDestroyed() && !splashWindow.isVisible()) {
       splashWindow.show();
     }
   });
@@ -384,9 +391,19 @@ function createWindow() {
   });
 
   mainWindow.once('ready-to-show', () => {
-    destroySplashWindow();
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show();
+    const showMainAndDismissSplash = () => {
+      destroySplashWindow();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show();
+      }
+    };
+    // If the main window won the race, the splash may still be hidden — show it briefly
+    // so it is not destroyed before the first paint.
+    if (splashWindow && !splashWindow.isDestroyed() && !splashWindow.isVisible()) {
+      splashWindow.show();
+      setTimeout(showMainAndDismissSplash, 100);
+    } else {
+      showMainAndDismissSplash();
     }
   });
 

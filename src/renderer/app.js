@@ -381,6 +381,7 @@ async function initializeApp() {
     await refreshVectorStore();
     await refreshServerStatus();
     await checkAndAutoStartServer();
+    await loadLlmTestPanelRetrievalSettings();
   } catch (error) {
     console.error('Error loading initial data:', error);
   }
@@ -532,13 +533,39 @@ function setupEventListeners() {
     await performSelfTest();
   });
 
+  const llmTestAlgo = document.getElementById('llm-passthrough-search-algorithm-select');
+  if (llmTestAlgo) {
+    llmTestAlgo.addEventListener('change', () => schedulePersistLlmTestRetrievalSettings());
+  }
+  const llmTestTimeout = document.getElementById('llm-passthrough-timeout-input');
+  if (llmTestTimeout) {
+    llmTestTimeout.addEventListener('change', () => schedulePersistLlmTestRetrievalSettings());
+    llmTestTimeout.addEventListener('input', () => schedulePersistLlmTestRetrievalSettings());
+  }
+
+  const llmPassthroughEnabledInput = document.getElementById('settings-llm-passthrough-enabled-input');
+  if (llmPassthroughEnabledInput) {
+    llmPassthroughEnabledInput.addEventListener('change', () => {
+      void refreshLlmPassthroughPanel({
+        llmPassthroughEnabled: llmPassthroughEnabledInput.checked === true
+      });
+    });
+  }
+
   const llmProviderSelect = document.getElementById('settings-llm-passthrough-provider-select');
   if (llmProviderSelect) {
-    llmProviderSelect.addEventListener('change', () => syncLlmPassthroughProviderUi());
+    llmProviderSelect.addEventListener('change', () => {
+      const prev = llmProviderSelect.dataset.lastProvider || 'ollama';
+      const next = llmProviderSelect.value === 'openai' ? 'openai' : 'ollama';
+      flushLlmPassthroughDraftFromInputs(prev);
+      applyLlmPassthroughDraftToInputs(next);
+      llmProviderSelect.dataset.lastProvider = next;
+      syncLlmPassthroughProviderUi();
+    });
   }
 
   const llmSendBtn = document.getElementById('llm-passthrough-send-btn');
-  if (llmSendBtn && window.electronAPI.llmPassthroughChat) {
+  if (llmSendBtn) {
     llmSendBtn.addEventListener('click', async () => {
       const promptEl = document.getElementById('llm-passthrough-prompt');
       const replyEl = document.getElementById('llm-passthrough-reply');
@@ -550,25 +577,79 @@ function setupEventListeners() {
         return;
       }
       llmSendBtn.disabled = true;
-      if (statusEl) statusEl.textContent = 'Calling model…';
+      if (statusEl) statusEl.textContent = 'Calling inbound passthrough…';
       if (replyEl) replyEl.textContent = '';
-      if (ctxEl) ctxEl.textContent = '';
+      if (ctxEl) {
+        ctxEl.textContent =
+          'The inbound HTTP response contains only the upstream model output (retrieved chunks are merged server-side). Use Search with the same prompt to inspect matching chunks.';
+      }
       try {
-        const res = await window.electronAPI.llmPassthroughChat(text);
-        if (!res.ok) {
-          if (replyEl) replyEl.textContent = '';
-          alert(res.error || 'LLM Passthrough failed.');
+        await persistLlmTestRetrievalSettingsFromInputs();
+        const mcpStatus = await window.electronAPI.getMCPServerStatus();
+        const target = pickInboundLlmPassthroughEndpoint(mcpStatus);
+        if (!target) {
+          alert(
+            'No inbound passthrough listener is available. Under Settings → Server, enable LLM Passthrough, turn on at least one inbound listener (Ollama-style or OpenAI-compatible), save, and confirm the Server status shows listening.'
+          );
           if (statusEl) statusEl.textContent = '';
           return;
         }
-        if (replyEl) replyEl.textContent = res.reply || '';
-        if (ctxEl) ctxEl.textContent = res.contextPreview || '(no chunks matched)';
-        const extra = [];
-        if (res.warnings && res.warnings.length) extra.push(`Warnings: ${res.warnings.join('; ')}`);
-        if (res.errors && res.errors.length) extra.push(`Errors: ${res.errors.join('; ')}`);
-        if (statusEl) statusEl.textContent = extra.length ? extra.join(' ') : 'Done.';
+        const settings = await window.electronAPI.getSettings();
+        const timeoutMs =
+          Number.isFinite(settings.llmPassthroughTimeoutMs) && settings.llmPassthroughTimeoutMs > 0
+            ? settings.llmPassthroughTimeoutMs
+            : 120000;
+        const activeNs = window.electronAPI.getActiveNamespace
+          ? await window.electronAPI.getActiveNamespace()
+          : '';
+        const headers = { 'Content-Type': 'application/json' };
+        if (activeNs && String(activeNs).trim()) {
+          headers['X-Froggy-Namespace'] = String(activeNs).trim();
+        }
+        const bodyObj = {
+          messages: [{ role: 'user', content: String(text).trim() }],
+          stream: false
+        };
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        let response;
+        try {
+          response = await fetch(target.url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(bodyObj),
+            signal: controller.signal
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+        const rawText = await response.text();
+        let data = null;
+        try {
+          data = rawText ? JSON.parse(rawText) : null;
+        } catch {
+          data = null;
+        }
+        if (!response.ok) {
+          throw new Error(inboundPassthroughErrorMessage(response.status, data));
+        }
+        const reply = extractLlmTestReplyFromPassthroughJson(target.kind, data);
+        if (!reply || !String(reply).trim()) {
+          throw new Error('The model returned an empty response.');
+        }
+        if (replyEl) replyEl.textContent = reply;
+        if (statusEl) {
+          statusEl.textContent = `Done (via ${target.kind === 'openai' ? 'OpenAI-compatible' : 'Ollama-style'} inbound).`;
+        }
       } catch (e) {
-        alert(e && e.message ? e.message : String(e));
+        const msg =
+          e && e.name === 'AbortError'
+            ? 'Request timed out.'
+            : e && e.message
+              ? e.message
+              : String(e);
+        alert(msg);
+        if (replyEl) replyEl.textContent = '';
         if (statusEl) statusEl.textContent = '';
       } finally {
         await refreshLlmPassthroughPanel();
@@ -904,6 +985,7 @@ function showCanvas(canvasName) {
       break;
     case 'llm':
       document.getElementById('llm-canvas').style.display = 'block';
+      void loadLlmTestPanelRetrievalSettings();
       void refreshLlmPassthroughPanel();
       break;
     case 'server':
@@ -2039,9 +2121,9 @@ async function refreshServerStatus() {
     const p = status.inboundPassthrough;
     const lines = [];
     if (!p.masterEnabled) {
-      lines.push('Inbound LLM passthrough: off (Settings → Passthrough).');
+      lines.push('Inbound LLM passthrough: off (enable LLM Passthrough under Settings → Server).');
     } else {
-      lines.push('Inbound LLM passthrough: on (uses LLM Passthrough upstream + RAG).');
+      lines.push('Inbound LLM passthrough: on (LLM Passthrough + RAG; HTTP entry points below).');
       if (p.ollama.enabled) {
         if (p.ollama.listening) {
           lines.push(
@@ -2324,73 +2406,105 @@ async function saveSettings() {
   window.electronAPI.notifyTraySettingsChanged();
 }
 
+/** In-memory draft for per-provider LLM upstream while the settings modal is open. */
+const llmPassthroughEndpointDraft = {
+  ollama: { baseUrl: '', model: '', apiKey: '' },
+  openai: { baseUrl: '', model: '', apiKey: '' }
+};
+
+function fillLlmPassthroughDraftFromSettings(settings) {
+  const d = llmPassthroughEndpointDraft;
+  d.ollama.baseUrl =
+    settings.llmPassthroughOllamaBaseUrl != null && String(settings.llmPassthroughOllamaBaseUrl).trim() !== ''
+      ? String(settings.llmPassthroughOllamaBaseUrl).trim()
+      : 'http://127.0.0.1:11434';
+  d.ollama.model = String(settings.llmPassthroughOllamaModel || '').trim();
+  d.ollama.apiKey = String(settings.llmPassthroughOllamaApiKey || '').trim();
+  d.openai.baseUrl = String(settings.llmPassthroughOpenAiBaseUrl || '').trim();
+  d.openai.model = String(settings.llmPassthroughOpenAiModel || '').trim();
+  d.openai.apiKey = String(settings.llmPassthroughOpenAiApiKey || '').trim();
+  const prov = settings.llmPassthroughProvider === 'openai' ? 'openai' : 'ollama';
+  if (prov === 'openai') {
+    if (!d.openai.baseUrl && settings.llmPassthroughBaseUrl) {
+      d.openai.baseUrl = String(settings.llmPassthroughBaseUrl).trim();
+    }
+    if (!d.openai.model && settings.llmPassthroughModel) {
+      d.openai.model = String(settings.llmPassthroughModel).trim();
+    }
+    if (!d.openai.apiKey && settings.llmPassthroughApiKey) {
+      d.openai.apiKey = String(settings.llmPassthroughApiKey).trim();
+    }
+  } else {
+    if (!d.ollama.baseUrl && settings.llmPassthroughBaseUrl) {
+      d.ollama.baseUrl = String(settings.llmPassthroughBaseUrl).trim() || 'http://127.0.0.1:11434';
+    }
+    if (!d.ollama.model && settings.llmPassthroughModel) {
+      d.ollama.model = String(settings.llmPassthroughModel).trim();
+    }
+    if (!d.ollama.apiKey && settings.llmPassthroughApiKey) {
+      d.ollama.apiKey = String(settings.llmPassthroughApiKey).trim();
+    }
+  }
+}
+
+function applyLlmPassthroughDraftToInputs(prov) {
+  const p = prov === 'openai' ? 'openai' : 'ollama';
+  const d = llmPassthroughEndpointDraft[p];
+  const baseEl = document.getElementById('settings-llm-passthrough-base-url-input');
+  const modelEl = document.getElementById('settings-llm-passthrough-model-input');
+  const keyEl = document.getElementById('settings-llm-passthrough-api-key-input');
+  if (baseEl) {
+    baseEl.value =
+      d.baseUrl || (p === 'ollama' ? 'http://127.0.0.1:11434' : '');
+  }
+  if (modelEl) modelEl.value = d.model || '';
+  if (keyEl) keyEl.value = '';
+}
+
+/**
+ * @param {'ollama' | 'openai'} prov Provider whose values are currently shown in the URL/model/key inputs
+ */
+function flushLlmPassthroughDraftFromInputs(prov) {
+  const p = prov === 'openai' ? 'openai' : 'ollama';
+  const baseEl = document.getElementById('settings-llm-passthrough-base-url-input');
+  const modelEl = document.getElementById('settings-llm-passthrough-model-input');
+  const keyEl = document.getElementById('settings-llm-passthrough-api-key-input');
+  const d = llmPassthroughEndpointDraft[p];
+  d.baseUrl = baseEl ? String(baseEl.value || '').trim() : '';
+  d.model = modelEl ? String(modelEl.value || '').trim() : '';
+  const newKey = keyEl ? String(keyEl.value || '').trim() : '';
+  if (newKey !== '') {
+    d.apiKey = newKey;
+  }
+}
+
 async function loadServerSettings() {
   const settings = await window.electronAPI.getSettings();
-  
-  // Load server port
+
+  const llmEnabled = document.getElementById('settings-llm-passthrough-enabled-input');
+  if (llmEnabled) {
+    llmEnabled.checked = settings.llmPassthroughEnabled === true;
+  }
+
   const serverPortInput = document.getElementById('settings-server-port-input');
   if (serverPortInput) {
     serverPortInput.value = settings.serverPort || 3000;
   }
-  
-  // Load auto-start server
+
   const autoStartServerInput = document.getElementById('settings-auto-start-server-input');
   if (autoStartServerInput) {
     autoStartServerInput.checked = settings.autoStartServer || false;
   }
-}
 
-function syncLlmPassthroughProviderUi() {
-  const sel = document.getElementById('settings-llm-passthrough-provider-select');
-  const wrap = document.getElementById('settings-llm-passthrough-api-key-wrap');
-  if (!sel || !wrap) return;
-  wrap.style.display = sel.value === 'openai' ? 'block' : 'none';
-}
-
-async function loadLlmPassthroughSettings() {
-  const settings = await window.electronAPI.getSettings();
-  const enabled = document.getElementById('settings-llm-passthrough-enabled-input');
-  if (enabled) {
-    enabled.checked = settings.llmPassthroughEnabled === true;
-  }
+  fillLlmPassthroughDraftFromSettings(settings);
   const provider = document.getElementById('settings-llm-passthrough-provider-select');
   if (provider) {
     provider.value = settings.llmPassthroughProvider === 'openai' ? 'openai' : 'ollama';
-  }
-  const baseUrl = document.getElementById('settings-llm-passthrough-base-url-input');
-  if (baseUrl) {
-    baseUrl.value =
-      settings.llmPassthroughBaseUrl != null && settings.llmPassthroughBaseUrl !== ''
-        ? settings.llmPassthroughBaseUrl
-        : 'http://127.0.0.1:11434';
-  }
-  const model = document.getElementById('settings-llm-passthrough-model-input');
-  if (model) {
-    model.value = settings.llmPassthroughModel || '';
-  }
-  const apiKey = document.getElementById('settings-llm-passthrough-api-key-input');
-  if (apiKey) {
-    apiKey.value = '';
-  }
-  const timeout = document.getElementById('settings-llm-passthrough-timeout-input');
-  if (timeout) {
-    timeout.value =
-      settings.llmPassthroughTimeoutMs != null ? settings.llmPassthroughTimeoutMs : 120000;
-  }
-  const algo = document.getElementById('settings-llm-passthrough-search-algorithm-select');
-  if (algo) {
-    const a = settings.llmPassthroughSearchAlgorithm || 'hybrid';
-    algo.value = ['hybrid', 'bm25', 'tfidf', 'vector'].includes(a) ? a : 'hybrid';
+    provider.dataset.lastProvider = provider.value;
+    applyLlmPassthroughDraftToInputs(provider.value === 'openai' ? 'openai' : 'ollama');
   }
   syncLlmPassthroughProviderUi();
-}
 
-async function loadInboundPassthroughSettings() {
-  const settings = await window.electronAPI.getSettings();
-  const master = document.getElementById('settings-passthrough-listen-enabled-input');
-  if (master) {
-    master.checked = settings.passthroughListenEnabled === true;
-  }
   const oEn = document.getElementById('settings-passthrough-ollama-listen-enabled-input');
   if (oEn) {
     oEn.checked = settings.passthroughOllamaListenEnabled === true;
@@ -2411,29 +2525,151 @@ async function loadInboundPassthroughSettings() {
   }
 }
 
-async function refreshLlmPassthroughPanel() {
+function syncLlmPassthroughProviderUi() {
+  const sel = document.getElementById('settings-llm-passthrough-provider-select');
+  const wrap = document.getElementById('settings-llm-passthrough-api-key-wrap');
+  if (!sel || !wrap) return;
+  wrap.style.display = sel.value === 'openai' ? 'block' : 'none';
+}
+
+async function loadLlmTestPanelRetrievalSettings() {
+  const settings = await window.electronAPI.getSettings();
+  const timeout = document.getElementById('llm-passthrough-timeout-input');
+  if (timeout) {
+    timeout.value =
+      settings.llmPassthroughTimeoutMs != null ? settings.llmPassthroughTimeoutMs : 120000;
+  }
+  const algo = document.getElementById('llm-passthrough-search-algorithm-select');
+  if (algo) {
+    const a = settings.llmPassthroughSearchAlgorithm || 'hybrid';
+    algo.value = ['hybrid', 'bm25', 'tfidf', 'vector'].includes(a) ? a : 'hybrid';
+  }
+}
+
+let llmTestRetrievalSaveTimer = null;
+function schedulePersistLlmTestRetrievalSettings() {
+  if (llmTestRetrievalSaveTimer) clearTimeout(llmTestRetrievalSaveTimer);
+  llmTestRetrievalSaveTimer = setTimeout(() => {
+    llmTestRetrievalSaveTimer = null;
+    void persistLlmTestRetrievalSettingsFromInputs();
+  }, 450);
+}
+
+async function persistLlmTestRetrievalSettingsFromInputs() {
+  const algoEl = document.getElementById('llm-passthrough-search-algorithm-select');
+  const timeoutEl = document.getElementById('llm-passthrough-timeout-input');
+  if (!algoEl || !timeoutEl) return;
+  const llmAlgo = algoEl.value || 'hybrid';
+  const llmTimeoutMs = parseInt(timeoutEl.value, 10);
+  if (!['hybrid', 'bm25', 'tfidf', 'vector'].includes(llmAlgo)) return;
+  if (!Number.isFinite(llmTimeoutMs) || llmTimeoutMs < 5000 || llmTimeoutMs > 600000) return;
+  try {
+    const settings = await window.electronAPI.getSettings();
+    settings.llmPassthroughTimeoutMs = llmTimeoutMs;
+    settings.llmPassthroughSearchAlgorithm = llmAlgo;
+    await window.electronAPI.saveSettings(settings);
+    window.electronAPI.notifyTraySettingsChanged();
+  } catch (e) {
+    console.error('persistLlmTestRetrievalSettingsFromInputs', e);
+  }
+}
+
+/**
+ * @param {{ inboundPassthrough?: object } | null | undefined} status from getMCPServerStatus()
+ * @returns {{ kind: 'openai' | 'ollama', url: string } | null}
+ */
+function pickInboundLlmPassthroughEndpoint(status) {
+  const p = status && status.inboundPassthrough;
+  if (!p || p.masterEnabled !== true) return null;
+  if (p.openai && p.openai.enabled === true && p.openai.listening === true && p.openai.port) {
+    return { kind: 'openai', url: `http://127.0.0.1:${p.openai.port}/v1/chat/completions` };
+  }
+  if (p.ollama && p.ollama.enabled === true && p.ollama.listening === true && p.ollama.port) {
+    return { kind: 'ollama', url: `http://127.0.0.1:${p.ollama.port}/api/chat` };
+  }
+  return null;
+}
+
+/**
+ * @param {'openai' | 'ollama'} kind
+ * @param {unknown} data parsed JSON from inbound (upstream-shaped body)
+ */
+function extractLlmTestReplyFromPassthroughJson(kind, data) {
+  if (!data || typeof data !== 'object') return '';
+  if (kind === 'openai') {
+    const c0 = data.choices && data.choices[0];
+    if (!c0) return '';
+    const m = c0.message;
+    if (m && typeof m.content === 'string') return m.content;
+    if (typeof c0.text === 'string') return c0.text;
+    return '';
+  }
+  if (data.message && typeof data.message.content === 'string') return data.message.content;
+  return '';
+}
+
+/** @param {number} statusCode @param {unknown} data */
+function inboundPassthroughErrorMessage(statusCode, data) {
+  if (data && typeof data === 'object') {
+    const err = data.error;
+    if (typeof err === 'string') return err;
+    if (err && typeof err === 'object' && typeof err.message === 'string') return err.message;
+    if (typeof data.message === 'string') return data.message;
+  }
+  return `HTTP ${statusCode}`;
+}
+
+/** @param {Record<string, unknown>} [overrides] Merged on top of getSettings() for live Server-tab edits. */
+async function refreshLlmPassthroughPanel(overrides) {
   const hint = document.getElementById('llm-passthrough-config-hint');
   const sendBtn = document.getElementById('llm-passthrough-send-btn');
   if (!hint || !sendBtn) return;
   try {
     const settings = await window.electronAPI.getSettings();
-    const on = settings.llmPassthroughEnabled === true;
-    const base = (settings.llmPassthroughBaseUrl || '').trim();
-    const model = (settings.llmPassthroughModel || '').trim();
-    const prov = settings.llmPassthroughProvider === 'openai' ? 'OpenAI-compatible' : 'Ollama';
+    const s =
+      overrides && typeof overrides === 'object' ? { ...settings, ...overrides } : settings;
+    const on = s.llmPassthroughEnabled === true;
+    const useOpenAi = s.llmPassthroughProvider === 'openai';
+    const base = String(
+      useOpenAi
+        ? s.llmPassthroughOpenAiBaseUrl || s.llmPassthroughBaseUrl || ''
+        : s.llmPassthroughOllamaBaseUrl || s.llmPassthroughBaseUrl || ''
+    ).trim();
+    const model = String(
+      useOpenAi
+        ? s.llmPassthroughOpenAiModel || s.llmPassthroughModel || ''
+        : s.llmPassthroughOllamaModel || s.llmPassthroughModel || ''
+    ).trim();
+    const prov = useOpenAi ? 'OpenAI-compatible' : 'Ollama';
     if (!on) {
       hint.textContent =
-        'LLM Passthrough is off. Open Settings → LLM Passthrough, enable it, and set base URL and model.';
+        'LLM Passthrough is off. Enable it under Settings → Server (LLM upstream), and set base URL and model there.';
       sendBtn.disabled = true;
       return;
     }
     if (!base || !model) {
       hint.textContent =
-        'LLM Passthrough is enabled but base URL or model is missing. Complete those fields in Settings → LLM Passthrough.';
+        'LLM Passthrough is enabled but base URL or model is missing for the selected API style. Complete those fields under Settings → Server.';
       sendBtn.disabled = true;
       return;
     }
-    hint.textContent = `Ready: ${prov} at ${base}, model "${model}". Retrieval uses your Search/Retrieval settings for this namespace.`;
+    let mcpStatus = null;
+    try {
+      mcpStatus = await window.electronAPI.getMCPServerStatus();
+    } catch {
+      mcpStatus = null;
+    }
+    const inbound = pickInboundLlmPassthroughEndpoint(mcpStatus);
+    if (!inbound) {
+      hint.textContent = `Upstream: ${prov} at ${base}, model "${model}". This tab calls inbound HTTP only: under Settings → Server, enable at least one listener (OpenAI-compatible and/or Ollama-style) on a free port until Server status shows listening.`;
+      sendBtn.disabled = true;
+      return;
+    }
+    const inboundLabel =
+      inbound.kind === 'openai'
+        ? `OpenAI-compatible POST ${inbound.url}`
+        : `Ollama-style POST ${inbound.url}`;
+    hint.textContent = `Ready: upstream ${prov} at ${base}, model "${model}". End-to-end test: ${inboundLabel} (same path external clients use). Active namespace is sent as X-Froggy-Namespace when set.`;
     sendBtn.disabled = false;
   } catch (e) {
     hint.textContent = 'Could not load settings for LLM Passthrough.';
@@ -2618,24 +2854,25 @@ function applyAllSettingsModalFieldsToSettings(settings) {
   const llmEnabledInput = document.getElementById('settings-llm-passthrough-enabled-input');
   const llmProviderSelect = document.getElementById('settings-llm-passthrough-provider-select');
   const llmBaseUrlInput = document.getElementById('settings-llm-passthrough-base-url-input');
-  const llmApiKeyInput = document.getElementById('settings-llm-passthrough-api-key-input');
   const llmModelInput = document.getElementById('settings-llm-passthrough-model-input');
-  const llmTimeoutInput = document.getElementById('settings-llm-passthrough-timeout-input');
-  const llmAlgoSelect = document.getElementById('settings-llm-passthrough-search-algorithm-select');
-  if (
-    !llmEnabledInput ||
-    !llmProviderSelect ||
-    !llmBaseUrlInput ||
-    !llmModelInput ||
-    !llmTimeoutInput ||
-    !llmAlgoSelect
-  ) {
+  const llmTimeoutInput = document.getElementById('llm-passthrough-timeout-input');
+  const llmAlgoSelect = document.getElementById('llm-passthrough-search-algorithm-select');
+  if (!llmEnabledInput || !llmProviderSelect || !llmBaseUrlInput || !llmModelInput) {
     return { ok: false, message: 'Settings form is missing LLM Passthrough fields.' };
+  }
+  if (!llmTimeoutInput || !llmAlgoSelect) {
+    return { ok: false, message: 'LLM test panel is missing retrieval or timeout fields.' };
   }
   const llmEnabled = llmEnabledInput.checked === true;
   const llmProvider = llmProviderSelect.value === 'openai' ? 'openai' : 'ollama';
-  const llmBaseUrl = String(llmBaseUrlInput.value || '').trim();
-  const llmModel = String(llmModelInput.value || '').trim();
+  flushLlmPassthroughDraftFromInputs(llmProvider);
+
+  const d = llmPassthroughEndpointDraft;
+  const ollamaBase = d.ollama.baseUrl || 'http://127.0.0.1:11434';
+  const openAiBase = String(d.openai.baseUrl || '').trim();
+  const ollamaModel = d.ollama.model.trim();
+  const openAiModel = d.openai.model.trim();
+
   const llmTimeoutMs = parseInt(llmTimeoutInput.value, 10) || 120000;
   const llmAlgo = llmAlgoSelect.value || 'hybrid';
   if (!['hybrid', 'bm25', 'tfidf', 'vector'].includes(llmAlgo)) {
@@ -2645,49 +2882,55 @@ function applyAllSettingsModalFieldsToSettings(settings) {
     return { ok: false, message: 'LLM Passthrough timeout must be between 5000 and 600000 ms.' };
   }
   if (llmEnabled) {
-    if (!llmBaseUrl) {
+    const activeBase = llmProvider === 'openai' ? openAiBase : ollamaBase;
+    const activeModel = llmProvider === 'openai' ? openAiModel : ollamaModel;
+    if (!activeBase) {
       return { ok: false, message: 'LLM Passthrough base URL is required when passthrough is enabled.' };
     }
-    const lower = llmBaseUrl.toLowerCase();
+    const lower = activeBase.toLowerCase();
     if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
       return { ok: false, message: 'LLM Passthrough base URL must start with http:// or https://.' };
     }
-    if (!llmModel) {
+    if (!activeModel) {
       return { ok: false, message: 'LLM Passthrough model is required when passthrough is enabled.' };
     }
   }
   settings.llmPassthroughEnabled = llmEnabled;
   settings.llmPassthroughProvider = llmProvider;
-  settings.llmPassthroughBaseUrl = llmBaseUrl;
-  settings.llmPassthroughModel = llmModel;
+  settings.llmPassthroughOllamaBaseUrl = ollamaBase;
+  settings.llmPassthroughOllamaModel = d.ollama.model;
+  settings.llmPassthroughOllamaApiKey = d.ollama.apiKey;
+  settings.llmPassthroughOpenAiBaseUrl = d.openai.baseUrl;
+  settings.llmPassthroughOpenAiModel = d.openai.model;
+  settings.llmPassthroughOpenAiApiKey = d.openai.apiKey;
+  const activeBaseForLegacy = llmProvider === 'openai' ? openAiBase : ollamaBase;
+  const activeModelForLegacy = llmProvider === 'openai' ? openAiModel : ollamaModel;
+  const activeKeyForLegacy =
+    llmProvider === 'openai' ? d.openai.apiKey : d.ollama.apiKey;
+  settings.llmPassthroughBaseUrl = activeBaseForLegacy;
+  settings.llmPassthroughModel = activeModelForLegacy;
+  settings.llmPassthroughApiKey = activeKeyForLegacy;
   settings.llmPassthroughTimeoutMs = llmTimeoutMs;
   settings.llmPassthroughSearchAlgorithm = llmAlgo;
-  if (llmApiKeyInput) {
-    const newLlmKey = String(llmApiKeyInput.value || '').trim();
-    if (newLlmKey !== '') {
-      settings.llmPassthroughApiKey = newLlmKey;
-    }
-  }
 
-  const ptMaster = document.getElementById('settings-passthrough-listen-enabled-input');
   const ptOllamaEn = document.getElementById('settings-passthrough-ollama-listen-enabled-input');
   const ptOllamaPort = document.getElementById('settings-passthrough-ollama-listen-port-input');
   const ptOpenAiEn = document.getElementById('settings-passthrough-openai-listen-enabled-input');
   const ptOpenAiPort = document.getElementById('settings-passthrough-openai-listen-port-input');
-  if (!ptMaster || !ptOllamaEn || !ptOllamaPort || !ptOpenAiEn || !ptOpenAiPort) {
-    return { ok: false, message: 'Settings form is missing Passthrough fields.' };
+  if (!ptOllamaEn || !ptOllamaPort || !ptOpenAiEn || !ptOpenAiPort) {
+    return { ok: false, message: 'Settings form is missing inbound passthrough fields (Server tab).' };
   }
-  const passthroughListenEnabled = ptMaster.checked === true;
   const passthroughOllamaListenEnabled = ptOllamaEn.checked === true;
   const passthroughOpenAiListenEnabled = ptOpenAiEn.checked === true;
   const ollamaListenPort = parseInt(ptOllamaPort.value, 10) || 0;
   const openAiListenPort = parseInt(ptOpenAiPort.value, 10) || 0;
 
-  if (passthroughListenEnabled) {
+  if (llmEnabled) {
     if (!passthroughOllamaListenEnabled && !passthroughOpenAiListenEnabled) {
       return {
         ok: false,
-        message: 'Inbound passthrough is on: enable at least one listener (Ollama-style or OpenAI-compatible).'
+        message:
+          'When LLM Passthrough is enabled, turn on at least one inbound listener (Ollama-style or OpenAI-compatible) under Inbound HTTP passthrough.'
       };
     }
     if (passthroughOllamaListenEnabled) {
@@ -2714,7 +2957,7 @@ function applyAllSettingsModalFieldsToSettings(settings) {
       return { ok: false, message: 'Ollama and OpenAI inbound ports must be different.' };
     }
   }
-  settings.passthroughListenEnabled = passthroughListenEnabled;
+  settings.passthroughListenEnabled = llmEnabled;
   settings.passthroughOllamaListenEnabled = passthroughOllamaListenEnabled;
   settings.passthroughOllamaListenPort = ollamaListenPort;
   settings.passthroughOpenAiListenEnabled = passthroughOpenAiListenEnabled;
@@ -2726,14 +2969,35 @@ function applyAllSettingsModalFieldsToSettings(settings) {
 async function persistSettingsModal() {
   try {
     const settings = await window.electronAPI.getSettings();
+    const prevPassthroughEnabled = settings.llmPassthroughEnabled === true;
     const r = applyAllSettingsModalFieldsToSettings(settings);
     if (!r.ok) {
       alert(r.message);
       return false;
     }
+    const nextPassthroughEnabled = settings.llmPassthroughEnabled === true;
     await window.electronAPI.saveSettings(settings);
     window.electronAPI.notifyTraySettingsChanged();
+
+    if (prevPassthroughEnabled !== nextPassthroughEnabled) {
+      try {
+        const status = await window.electronAPI.getMCPServerStatus();
+        if (nextPassthroughEnabled) {
+          if (!status.running) {
+            const port = settings.serverPort || 3000;
+            await window.electronAPI.startMCPServer(port);
+          }
+        } else if (status.running) {
+          await window.electronAPI.stopMCPServer();
+        }
+      } catch (e) {
+        console.error('MCP server start/stop after LLM Passthrough toggle', e);
+        alert(e.message || String(e));
+      }
+    }
+
     await refreshServerStatus();
+    void refreshLlmPassthroughPanel();
     return true;
   } catch (e) {
     console.error('persistSettingsModal', e);
@@ -3477,8 +3741,7 @@ async function showSettingsModal() {
   await loadMetadataFilteringSettings();
   await loadGeneralSettings();
   await loadServerSettings();
-  await loadLlmPassthroughSettings();
-  await loadInboundPassthroughSettings();
+  await loadLlmTestPanelRetrievalSettings();
   await loadUpdatesSettingsPanel();
 
   // Clean up previous event handlers
