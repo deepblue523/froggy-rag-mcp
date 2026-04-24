@@ -26,7 +26,7 @@ function detectDocumentProfile(content, metadata = {}) {
     return { kind: 'code', subkind: ext.replace(/^\./, '') };
   }
   if (MARKDOWN_EXT.has(ext)) {
-    return { kind: 'markdown' };
+    return { kind: 'markdown', suggestedChunkSize: 3200 };
   }
 
   const jsonObj = tryParseJsonObject(content);
@@ -197,21 +197,205 @@ function splitStructuredUnits(content, profile) {
   return null;
 }
 
+/**
+ * Split Markdown into logical units for the same pipeline as other profiles:
+ * structured units → sentence-bounded subdivide → overlap merge.
+ * Fence-aware (headings / rules inside fenced code do not start new sections).
+ */
 function splitMarkdownSections(text) {
   const lines = text.split(/\r?\n/);
-  const units = [];
-  let buf = [];
-  for (const line of lines) {
-    if (/^#{1,6}\s+/.test(line) && buf.length > 0) {
-      units.push(buf.join('\n'));
-      buf = [line];
-    } else {
-      buf.push(line);
+  const { frontBlock, bodyLines: rawBody } = extractYamlFrontMatterLines(lines);
+  const bodyLines = trimLeadingEmptyLines(rawBody);
+
+  const starts = collectMarkdownSectionStarts(bodyLines);
+  let units = sliceByLineStarts(bodyLines, starts).map((u) => u.trimEnd()).filter(Boolean);
+
+  if (frontBlock) {
+    const fb = frontBlock.trimEnd();
+    if (fb) units = units.length ? [fb, ...units] : [fb];
+  }
+
+  units = coalesceStubHeadingUnits(units);
+
+  if (units.length === 1 && units[0].length > 12000) {
+    const paras = units[0].split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+    if (paras.length > 1) return paras;
+  }
+
+  return units.length ? units : [text];
+}
+
+/**
+ * @param {string[]} lines
+ * @returns {{ frontBlock: string | null, bodyLines: string[] }}
+ */
+function extractYamlFrontMatterLines(lines) {
+  if (lines.length < 2) return { frontBlock: null, bodyLines: lines };
+  if (lines[0].trim() !== '---') return { frontBlock: null, bodyLines: lines };
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === '---') {
+      const frontLines = lines.slice(0, i + 1);
+      const bodyLines = lines.slice(i + 1);
+      return { frontBlock: frontLines.join('\n'), bodyLines };
     }
   }
-  if (buf.length) units.push(buf.join('\n'));
-  const merged = units.map((u) => u.trim()).filter(Boolean);
-  return merged.length ? merged : [text];
+  return { frontBlock: null, bodyLines: lines };
+}
+
+/** @param {string[]} lines */
+function trimLeadingEmptyLines(lines) {
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === '') i += 1;
+  return i > 0 ? lines.slice(i) : lines;
+}
+
+/**
+ * @param {string} line
+ * @returns {{ ch: string, len: number } | null}
+ */
+function parseFenceStart(line) {
+  const m = line.match(/^ {0,3}(`{3,}|~{3,})/);
+  if (!m) return null;
+  const fence = m[1];
+  return { ch: fence[0], len: fence.length };
+}
+
+/** @param {string} line */
+function isFenceClose(line, ch, minLen) {
+  const t = line.trim();
+  const run = ch === '`' ? /^`+/ : /^~+/;
+  const mm = t.match(run);
+  if (!mm || mm[0].length < minLen) return false;
+  return t === mm[0] || t.slice(mm[0].length).trim() === '';
+}
+
+/**
+ * @param {string[]} bodyLines
+ * @returns {number[]} sorted unique line indices where a new section begins (0-based in bodyLines)
+ */
+function collectMarkdownSectionStarts(bodyLines) {
+  const starts = new Set([0]);
+  let inFence = null;
+
+  for (let i = 0; i < bodyLines.length; i++) {
+    const line = bodyLines[i];
+
+    if (inFence) {
+      if (isFenceClose(line, inFence.ch, inFence.len)) {
+        inFence = null;
+      }
+      continue;
+    }
+
+    const fs = parseFenceStart(line);
+    if (fs) {
+      inFence = { ch: fs.ch, len: fs.len };
+      continue;
+    }
+
+    if (isAtxHeadingLine(line)) {
+      if (i > 0) starts.add(i);
+      continue;
+    }
+
+    const setextUnderline =
+      i > 0 &&
+      couldBeSetextTitle(bodyLines[i - 1]) &&
+      (/^ {0,3}=+\s*$/.test(line) || /^ {0,3}-{2,}\s*$/.test(line));
+
+    if (setextUnderline) {
+      starts.add(i - 1);
+      continue;
+    }
+
+    if (isThematicBreakLine(line)) {
+      if (i + 1 < bodyLines.length) starts.add(i + 1);
+    }
+  }
+
+  return [...starts].sort((a, b) => a - b);
+}
+
+/** @param {string} line */
+function isAtxHeadingLine(line) {
+  return /^ {0,3}#{1,6}(?:\s|$)/.test(line);
+}
+
+/** @param {string} line */
+function isThematicBreakLine(line) {
+  const t = line.trim();
+  if (!t) return false;
+  if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(t)) return true;
+  return /^(?:\* *){3,}\s*$/.test(t);
+}
+
+/** @param {string} line */
+function couldBeSetextTitle(line) {
+  const t = line.trimEnd();
+  if (!t) return false;
+  if (/^#{1,6}\s/.test(t)) return false;
+  if (/^[-*+]\s/.test(t)) return false;
+  if (/^\d+\.\s/.test(t)) return false;
+  if (/^>\s?/.test(t)) return false;
+  if (/^<{1,3}[!/]?/i.test(t)) return false;
+  if (/^[-=]{2,}\s*$/.test(t)) return false;
+  if (t.length > 280) return false;
+  return true;
+}
+
+/**
+ * @param {string[]} bodyLines
+ * @param {number[]} starts
+ */
+function sliceByLineStarts(bodyLines, starts) {
+  const sorted = [...new Set(starts)].filter((i) => i >= 0 && i < bodyLines.length).sort((a, b) => a - b);
+  const units = [];
+  for (let u = 0; u < sorted.length; u++) {
+    const a = sorted[u];
+    const b = sorted[u + 1] ?? bodyLines.length;
+    if (a < b) units.push(bodyLines.slice(a, b).join('\n'));
+  }
+  return units;
+}
+
+/**
+ * Merge isolated short heading lines into the following section so embeddings carry the heading + body.
+ * @param {string[]} units
+ */
+function coalesceStubHeadingUnits(units) {
+  if (units.length < 2) return units;
+  const out = [];
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i];
+    if (
+      i + 1 < units.length &&
+      isStubHeadingUnit(u)
+    ) {
+      out.push(`${u.trimEnd()}\n\n${units[i + 1].trimEnd()}`.trimEnd());
+      i += 1;
+    } else {
+      out.push(u);
+    }
+  }
+  return out;
+}
+
+/** @param {string} unit */
+function isStubHeadingUnit(unit) {
+  const t = unit.trim();
+  if (!t) return false;
+  const lines = t.split(/\r?\n/);
+  if (
+    lines.length === 2 &&
+    couldBeSetextTitle(lines[0]) &&
+    /^ {0,3}[=-]+\s*$/.test(lines[1])
+  ) {
+    return t.length <= 400;
+  }
+  if (lines.length === 1 && isAtxHeadingLine(lines[0])) {
+    return t.length <= 220;
+  }
+  return false;
 }
 
 function splitCodeUnits(text) {
