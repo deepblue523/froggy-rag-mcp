@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Settings
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
+  saveWebSearchSettings: (patch) => ipcRenderer.invoke('save-web-search-settings', patch),
   /** Same RAG + upstream as inbound HTTP, invoked in main (no loopback fetch). */
   llmPassthroughTestDirect: (payload) => ipcRenderer.invoke('llm-passthrough-test-direct', payload),
   /** Aborts the in-flight direct IPC LLM test (upstream HTTP in main). */

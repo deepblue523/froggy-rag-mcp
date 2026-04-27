@@ -116,24 +116,15 @@ class RAGService extends EventEmitter {
 
   saveSettings(newSettings) {
     if (newSettings) {
-      const allowWebSearchSettingsSave = newSettings.__allowWebSearchSettingsSave === true;
-      const settingsPatch = { ...newSettings };
-      delete settingsPatch.__allowWebSearchSettingsSave;
-      if (!allowWebSearchSettingsSave) {
-        delete settingsPatch.googleCustomSearchApiKey;
-        delete settingsPatch.googleCustomSearchEngineId;
-        delete settingsPatch.googleCustomSearchNumResults;
-        delete settingsPatch.llmPassthroughIncludeWebResults;
-      }
-      this.settings = { ...this.settings, ...settingsPatch };
-      
+      this.settings = { ...this.settings, ...newSettings };
+
       // Update document processor if normalizeEmbeddings changed
-      if (settingsPatch.normalizeEmbeddings !== undefined && this.documentProcessor) {
-        this.documentProcessor.normalizeEmbeddings = settingsPatch.normalizeEmbeddings;
+      if (newSettings.normalizeEmbeddings !== undefined && this.documentProcessor) {
+        this.documentProcessor.normalizeEmbeddings = newSettings.normalizeEmbeddings;
       }
-      
+
       // Reload embedding model if model changed
-      if (settingsPatch.embeddingModel && settingsPatch.embeddingModel !== this.settings.embeddingModel) {
+      if (newSettings.embeddingModel && newSettings.embeddingModel !== this.settings.embeddingModel) {
         this.loadEmbeddingModel();
       }
     }
@@ -143,6 +134,36 @@ class RAGService extends EventEmitter {
 
     this._saveSettingsToDisk();
 
+    return this.settings;
+  }
+
+  /**
+   * Update only the Web Search related settings, isolated from the generic save path so
+   * concurrent saves (splitter drag, LLM tab autosave, etc.) cannot clobber freshly typed values.
+   * @param {{ googleCustomSearchApiKey?: string, googleCustomSearchEngineId?: string, googleCustomSearchNumResults?: number, googleCustomSearchTimeoutSeconds?: number, llmPassthroughIncludeWebResults?: boolean }} patch
+   */
+  saveWebSearchSettings(patch) {
+    if (!patch || typeof patch !== 'object') {
+      return this.settings;
+    }
+    if (typeof patch.googleCustomSearchApiKey === 'string' && patch.googleCustomSearchApiKey.trim() !== '') {
+      this.settings.googleCustomSearchApiKey = patch.googleCustomSearchApiKey.trim();
+    }
+    if (typeof patch.googleCustomSearchEngineId === 'string') {
+      this.settings.googleCustomSearchEngineId = patch.googleCustomSearchEngineId.trim();
+    }
+    if (Number.isFinite(patch.googleCustomSearchNumResults)) {
+      const n = Math.floor(patch.googleCustomSearchNumResults);
+      this.settings.googleCustomSearchNumResults = Math.max(1, Math.min(10, n));
+    }
+    if (Number.isFinite(patch.googleCustomSearchTimeoutSeconds)) {
+      const t = Math.floor(patch.googleCustomSearchTimeoutSeconds);
+      this.settings.googleCustomSearchTimeoutSeconds = Math.max(1, Math.min(60, t));
+    }
+    if (typeof patch.llmPassthroughIncludeWebResults === 'boolean') {
+      this.settings.llmPassthroughIncludeWebResults = patch.llmPassthroughIncludeWebResults;
+    }
+    this._saveSettingsToDisk();
     return this.settings;
   }
 

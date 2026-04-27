@@ -10,7 +10,9 @@ function getGoogleCustomSearchConfig(settings) {
   const apiKey = String(settings.googleCustomSearchApiKey || '').trim();
   const searchEngineId = String(settings.googleCustomSearchEngineId || '').trim();
   const defaultNumResults = normalizePositiveInt(settings.googleCustomSearchNumResults, 5, 10);
-  return { apiKey, searchEngineId, defaultNumResults };
+  const defaultTimeoutSeconds = normalizePositiveInt(settings.googleCustomSearchTimeoutSeconds, 15, 60);
+  const defaultTimeoutMs = defaultTimeoutSeconds * 1000;
+  return { apiKey, searchEngineId, defaultNumResults, defaultTimeoutMs };
 }
 
 function assertGoogleCustomSearchConfigured(settings) {
@@ -48,7 +50,7 @@ async function searchGoogleCustomSearch(settings, query, options = {}) {
   }
   const numResults = normalizePositiveInt(options.numResults, config.defaultNumResults, 10);
   const controller = new AbortController();
-  const timeoutMs = normalizePositiveInt(options.timeoutMs, 15000, 60000);
+  const timeoutMs = normalizePositiveInt(options.timeoutMs, config.defaultTimeoutMs, 60000);
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const url = new URL(GOOGLE_CUSTOM_SEARCH_ENDPOINT);

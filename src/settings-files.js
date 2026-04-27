@@ -164,6 +164,7 @@ function getDefaultSettings() {
     googleCustomSearchApiKey: '',
     googleCustomSearchEngineId: '',
     googleCustomSearchNumResults: 5,
+    googleCustomSearchTimeoutSeconds: 15,
     llmPassthroughIncludeWebResults: false,
     /** @deprecated mirrors llmPassthroughEnabled; kept for older settings.json */
     passthroughListenEnabled: false,

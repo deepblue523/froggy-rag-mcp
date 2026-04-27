@@ -459,11 +459,148 @@ function subdivideUnit(unit, maxChars, splitSentences) {
   return out;
 }
 
+/**
+ * If a Markdown unit exceeds maxChars, subdivide on Markdown block boundaries.
+ * Tables and fenced code blocks are treated as indivisible unless they alone exceed maxChars.
+ * @param {string} unit
+ * @param {number} maxChars
+ * @param {(t: string) => string[]} splitSentences
+ * @returns {string[]}
+ */
+function subdivideMarkdownUnit(unit, maxChars, splitSentences) {
+  if (unit.length <= maxChars) return [unit];
+
+  const blocks = splitMarkdownBlocks(unit);
+  if (blocks.length <= 1) return subdivideUnit(unit, maxChars, splitSentences);
+
+  const out = [];
+  let buf = [];
+  let len = 0;
+
+  const flush = () => {
+    if (!buf.length) return;
+    out.push(buf.join('\n\n').trimEnd());
+    buf = [];
+    len = 0;
+  };
+
+  for (const block of blocks) {
+    const blockLen = block.length + (buf.length ? 2 : 0);
+    if (block.length > maxChars) {
+      flush();
+      out.push(...subdivideUnit(block, maxChars, splitSentences));
+      continue;
+    }
+    if (len + blockLen > maxChars && buf.length > 0) {
+      flush();
+    }
+    buf.push(block);
+    len += block.length + (buf.length > 1 ? 2 : 0);
+  }
+
+  flush();
+  return out.length ? out : subdivideUnit(unit, maxChars, splitSentences);
+}
+
+/** @param {string} text */
+function splitMarkdownBlocks(text) {
+  const lines = text.split(/\r?\n/);
+  const blocks = [];
+  let normal = [];
+  let inFence = null;
+
+  const flushNormal = () => {
+    const block = normal.join('\n').trim();
+    if (block) blocks.push(block);
+    normal = [];
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (inFence) {
+      normal.push(line);
+      if (isFenceClose(line, inFence.ch, inFence.len)) {
+        inFence = null;
+        flushNormal();
+      }
+      continue;
+    }
+
+    const fs = parseFenceStart(line);
+    if (fs) {
+      flushNormal();
+      inFence = { ch: fs.ch, len: fs.len };
+      normal.push(line);
+      continue;
+    }
+
+    if (isMarkdownTableStart(lines, i)) {
+      flushNormal();
+      const tableLines = [line, lines[i + 1]];
+      i += 2;
+      while (i < lines.length && isMarkdownTableRow(lines[i])) {
+        tableLines.push(lines[i]);
+        i += 1;
+      }
+      i -= 1;
+      blocks.push(tableLines.join('\n').trimEnd());
+      continue;
+    }
+
+    if (
+      i + 1 < lines.length &&
+      couldBeSetextTitle(line) &&
+      (/^ {0,3}=+\s*$/.test(lines[i + 1]) || /^ {0,3}-{2,}\s*$/.test(lines[i + 1]))
+    ) {
+      flushNormal();
+      blocks.push(`${line}\n${lines[i + 1]}`.trimEnd());
+      i += 1;
+      continue;
+    }
+
+    if (line.trim() === '') {
+      flushNormal();
+      continue;
+    }
+
+    normal.push(line);
+  }
+
+  flushNormal();
+  return blocks;
+}
+
+function isMarkdownTableStart(lines, index) {
+  return (
+    index + 1 < lines.length &&
+    isMarkdownTableRow(lines[index]) &&
+    isMarkdownTableDelimiter(lines[index + 1])
+  );
+}
+
+/** @param {string} line */
+function isMarkdownTableRow(line) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('>')) return false;
+  return trimmed.includes('|') && !isMarkdownTableDelimiter(line);
+}
+
+/** @param {string} line */
+function isMarkdownTableDelimiter(line) {
+  const trimmed = line.trim();
+  if (!trimmed.includes('|')) return false;
+  const cells = trimmed.replace(/^\|/, '').replace(/\|$/, '').split('|');
+  if (cells.length < 2) return false;
+  return cells.every((cell) => /^\s*:?-{3,}:?\s*$/.test(cell));
+}
+
 module.exports = {
   CODE_LIKE_EXT,
   MARKDOWN_EXT,
   DATA_EXT,
   detectDocumentProfile,
   splitStructuredUnits,
-  subdivideUnit
+  subdivideUnit,
+  subdivideMarkdownUnit
 };

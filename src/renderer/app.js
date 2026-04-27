@@ -961,6 +961,11 @@ function setupEventListeners() {
     webSearchNumInput.addEventListener('change', () => schedulePersistWebSearchSettings());
     webSearchNumInput.addEventListener('input', () => schedulePersistWebSearchSettings());
   }
+  const webSearchTimeoutInput = document.getElementById('settings-google-custom-search-timeout-seconds-input');
+  if (webSearchTimeoutInput) {
+    webSearchTimeoutInput.addEventListener('change', () => schedulePersistWebSearchSettings());
+    webSearchTimeoutInput.addEventListener('input', () => schedulePersistWebSearchSettings());
+  }
   const webSearchIncludeInput = document.getElementById('settings-llm-passthrough-include-web-results-input');
   if (webSearchIncludeInput) {
     webSearchIncludeInput.addEventListener('change', () => {
@@ -3208,6 +3213,11 @@ function loadWebSearchSettingsFrom(settings) {
     googleNum.value =
       settings.googleCustomSearchNumResults != null ? settings.googleCustomSearchNumResults : 5;
   }
+  const googleTimeout = document.getElementById('settings-google-custom-search-timeout-seconds-input');
+  if (googleTimeout) {
+    googleTimeout.value =
+      settings.googleCustomSearchTimeoutSeconds != null ? settings.googleCustomSearchTimeoutSeconds : 15;
+  }
   const includeWeb = document.getElementById('settings-llm-passthrough-include-web-results-input');
   if (includeWeb) {
     includeWeb.checked = settings.llmPassthroughIncludeWebResults === true;
@@ -3223,26 +3233,34 @@ async function loadWebSearchSettings() {
   loadWebSearchSettingsFrom(settings);
 }
 
-function applyWebSearchSettingsFieldsToSettings(settings) {
+function readWebSearchSettingsFieldsAsPatch() {
   const googleApiKeyInput = document.getElementById('settings-google-custom-search-api-key-input');
   const googleCxInput = document.getElementById('settings-google-custom-search-engine-id-input');
   const googleNumInput = document.getElementById('settings-google-custom-search-num-results-input');
+  const googleTimeoutInput = document.getElementById('settings-google-custom-search-timeout-seconds-input');
   const includeWebInput = document.getElementById('settings-llm-passthrough-include-web-results-input');
-  if (!googleApiKeyInput || !googleCxInput || !googleNumInput || !includeWebInput) {
+  if (!googleApiKeyInput || !googleCxInput || !googleNumInput || !googleTimeoutInput || !includeWebInput) {
     return { ok: false, message: 'Settings form is missing Web Search fields.' };
   }
   const googleNumResults = parseInt(googleNumInput.value, 10) || 5;
   if (googleNumResults < 1 || googleNumResults > 10) {
     return { ok: false, message: 'Google Custom Search results per search must be between 1 and 10.' };
   }
+  const googleTimeoutSeconds = parseInt(googleTimeoutInput.value, 10) || 15;
+  if (googleTimeoutSeconds < 1 || googleTimeoutSeconds > 60) {
+    return { ok: false, message: 'Google Custom Search timeout must be between 1 and 60 seconds.' };
+  }
+  const patch = {
+    googleCustomSearchEngineId: String(googleCxInput.value || '').trim(),
+    googleCustomSearchNumResults: googleNumResults,
+    googleCustomSearchTimeoutSeconds: googleTimeoutSeconds,
+    llmPassthroughIncludeWebResults: includeWebInput.checked === true,
+  };
   const newGoogleApiKey = String(googleApiKeyInput.value || '').trim();
   if (newGoogleApiKey !== '') {
-    settings.googleCustomSearchApiKey = newGoogleApiKey;
+    patch.googleCustomSearchApiKey = newGoogleApiKey;
   }
-  settings.googleCustomSearchEngineId = String(googleCxInput.value || '').trim();
-  settings.googleCustomSearchNumResults = googleNumResults;
-  settings.llmPassthroughIncludeWebResults = includeWebInput.checked === true;
-  return { ok: true };
+  return { ok: true, patch };
 }
 
 let webSearchSettingsSaveTimer = null;
@@ -3258,8 +3276,7 @@ function schedulePersistWebSearchSettings() {
 async function persistWebSearchSettingsFromInputs(options = {}) {
   const saveStatus = document.getElementById('settings-web-search-save-status');
   try {
-    const settings = await window.electronAPI.getSettings();
-    const result = applyWebSearchSettingsFieldsToSettings(settings);
+    const result = readWebSearchSettingsFieldsAsPatch();
     if (!result.ok) {
       if (!options.silent) {
         alert(result.message);
@@ -3269,10 +3286,11 @@ async function persistWebSearchSettingsFromInputs(options = {}) {
       }
       return false;
     }
-    settings.__allowWebSearchSettingsSave = true;
-    await window.electronAPI.saveSettings(settings);
+    const updatedSettings = await window.electronAPI.saveWebSearchSettings(result.patch);
     window.electronAPI.notifyTraySettingsChanged();
-    loadWebSearchSettingsFrom(settings);
+    if (updatedSettings) {
+      loadWebSearchSettingsFrom(updatedSettings);
+    }
     if (saveStatus) {
       saveStatus.textContent = 'Saved.';
     }
@@ -3941,10 +3959,11 @@ function applyAllSettingsModalFieldsToSettings(settings) {
   settings.llmPassthroughTimeoutMs = llmTimeoutMs;
   settings.llmPassthroughSearchAlgorithm = llmAlgo;
 
-  const webSearchSettingsResult = applyWebSearchSettingsFieldsToSettings(settings);
+  const webSearchSettingsResult = readWebSearchSettingsFieldsAsPatch();
   if (!webSearchSettingsResult.ok) {
     return webSearchSettingsResult;
   }
+  Object.assign(settings, webSearchSettingsResult.patch);
 
   const llmTransportSelect = document.getElementById('llm-passthrough-test-transport-select');
   if (llmTransportSelect) {
@@ -4015,7 +4034,6 @@ async function persistSettingsModal() {
       return false;
     }
     const nextPassthroughEnabled = settings.llmPassthroughEnabled === true;
-    settings.__allowWebSearchSettingsSave = true;
     await window.electronAPI.saveSettings(settings);
     window.electronAPI.notifyTraySettingsChanged();
 

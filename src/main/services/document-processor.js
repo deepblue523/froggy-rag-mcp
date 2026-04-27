@@ -12,6 +12,7 @@ const {
   detectDocumentProfile,
   splitStructuredUnits,
   subdivideUnit,
+  subdivideMarkdownUnit,
   CODE_LIKE_EXT,
   MARKDOWN_EXT
 } = require('./document-chunk-strategies');
@@ -220,11 +221,15 @@ class DocumentProcessor {
 
     const baseStrings = [];
     for (const piece of stringPieces) {
-      const parts = subdivideUnit(piece, effectiveSize, (t) => this.splitIntoSentences(t));
+      const parts = profile.kind === 'markdown'
+        ? subdivideMarkdownUnit(piece, effectiveSize, (t) => this.splitIntoSentences(t))
+        : subdivideUnit(piece, effectiveSize, (t) => this.splitIntoSentences(t));
       baseStrings.push(...parts);
     }
 
-    let mergedByOverlap = this._mergeStringsWithOverlap(baseStrings, effectiveSize, overlap, metadata, profile);
+    let mergedByOverlap = profile.kind === 'markdown'
+      ? this._mergeMarkdownStringsWithOverlap(baseStrings, effectiveSize, overlap, metadata, profile)
+      : this._mergeStringsWithOverlap(baseStrings, effectiveSize, overlap, metadata, profile);
 
     if (opt.hierarchicalChunking && mergedByOverlap.length > 1) {
       mergedByOverlap = this._addHierarchicalCoarseChunks(
@@ -332,6 +337,58 @@ class DocumentProcessor {
           docProfileSubkind: profile.subkind
         }
       });
+    }
+
+    return chunks;
+  }
+
+  _mergeMarkdownStringsWithOverlap(strings, chunkSize, overlap, metadata, profile) {
+    const blocks = strings.map((s) => String(s || '').trim()).filter(Boolean);
+    if (blocks.length === 0) return [];
+
+    const chunks = [];
+    let current = [];
+    let currentLength = 0;
+
+    const makeChunk = (items) => ({
+      id: uuidv4(),
+      content: items.join('\n\n').trim(),
+      chunkIndex: chunks.length,
+      metadata: {
+        ...metadata,
+        chunkType: 'text',
+        docProfile: profile.kind,
+        docProfileSubkind: profile.subkind
+      }
+    });
+
+    const overlapItemsFrom = (items) => {
+      if (overlap <= 0 || items.length === 0) return [];
+      const selected = [];
+      let len = 0;
+      for (let i = items.length - 1; i >= 0; i--) {
+        const itemLen = items[i].length + (selected.length ? 2 : 0);
+        if (len + itemLen > overlap) break;
+        selected.unshift(items[i]);
+        len += itemLen;
+        if (len >= overlap) break;
+      }
+      return selected;
+    };
+
+    for (const block of blocks) {
+      const addLen = block.length + (current.length ? 2 : 0);
+      if (current.length > 0 && currentLength + addLen > chunkSize) {
+        chunks.push(makeChunk(current));
+        current = overlapItemsFrom(current);
+        currentLength = current.join('\n\n').length;
+      }
+      current.push(block);
+      currentLength += block.length + (current.length > 1 ? 2 : 0);
+    }
+
+    if (current.length > 0) {
+      chunks.push(makeChunk(current));
     }
 
     return chunks;

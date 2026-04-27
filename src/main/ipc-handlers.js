@@ -214,6 +214,11 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
     return out;
   });
 
+  ipcMain.handle('save-web-search-settings', async (_, patch) => {
+    await waitForServices();
+    return ragServiceRef.saveWebSearchSettings(patch || {});
+  });
+
   ipcMain.on('llm-passthrough-test-direct-cancel', () => {
     if (llmPassthroughTestDirectAbortController) {
       try {
