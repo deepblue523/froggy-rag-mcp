@@ -1205,7 +1205,7 @@ async function initializeApp() {
       if (el) el.textContent = version;
     });
     // Update page title
-    document.title = `Froggy RAG MCP (v${version})`;
+    document.title = `Froggy on RAG (v${version})`;
   } catch (error) {
     console.error('Error loading app version:', error);
   }

@@ -15,7 +15,7 @@ with all code embedded.
 - Implement tools suitable for RAG
 
 ** UI **
-- Header bar at top wirh label "Froggy RAG MCP".
+- Header bar at top wirh label "Froggy on RAG".
 - Tree on the left with sizable vertical splitter (position is persisted).
     - tree will initially contain four roots: Ingestion, Vector Store, Search, and Server.
 	    - Ingestion: will have two child elements: Files and Folders

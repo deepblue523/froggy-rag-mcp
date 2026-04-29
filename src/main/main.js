@@ -245,7 +245,7 @@ function showMainWindowFromTray() {
 function buildTrayMenu() {
   return Menu.buildFromTemplate([
     {
-      label: 'Show Froggy RAG MCP',
+      label: 'Show Froggy on RAG',
       click: () => showMainWindowFromTray()
     },
     { type: 'separator' },
@@ -271,7 +271,7 @@ function ensureTray() {
     return;
   }
   tray = new Tray(icon);
-  tray.setToolTip(`Froggy RAG MCP (v${app.getVersion()})`);
+  tray.setToolTip(`Froggy on RAG (v${app.getVersion()})`);
   tray.setContextMenu(buildTrayMenu());
   tray.on('click', () => {
     showMainWindowFromTray();
@@ -389,7 +389,7 @@ function createWindow() {
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
     },
-    title: `Froggy RAG MCP (v${app.getVersion()})`,
+    title: `Froggy on RAG (v${app.getVersion()})`,
     autoHideMenuBar: true,
     icon: path.join(__dirname, '..', 'renderer', 'images', 'Froggy RAG x32.png')
   });

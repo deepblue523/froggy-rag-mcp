@@ -87,7 +87,7 @@ function createDistReadme() {
   const readmePath = path.join(distDir, 'DISTRIBUTION.md');
   const readmeContent = `# Distribution Package
 
-This is a source distribution of Froggy RAG MCP.
+This is a source distribution of Froggy on RAG.
 
 ## Installation
 

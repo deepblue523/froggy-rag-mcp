@@ -1,287 +1,131 @@
-# Froggy RAG MCP
+# 🐸 Froggy RAG
 
-A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Model Context Protocol) server and modern UI. This is a self-contained Electron application that provides a complete solution for document ingestion, vector storage, semantic search, and MCP server integration. With LLM Passthrough and optional inbound HTTP listeners enabled under Settings → LLM Passthrough, the app can also act as a local passthrough: it accepts Ollama-style or OpenAI-compatible chat requests, retrieves from your corpora, and injects that context into the upstream LLM call so existing HTTP clients get RAG without orchestrating MCP tools. Clients that prefer explicit retrieval can still use MCP tools such as `search_vector_store` and `list_namespaces`.
+> Point your app at Froggy. Get RAG automatically.
 
-## Features
+Froggy RAG is a **local, OpenAI/Ollama-compatible passthrough API** that
+injects relevant context from your documents *before* your request hits
+the LLM.
 
-### 🔍 RAG System
-- **Vector Store**: Built on SQLite, stored in `~/froggy-rag-mcp/data`
-- **World-Class Chunking**: Supports `.docx`, `.xlsx`, `.pdf`, `.csv`, `.txt`, `.html`, `.md`, `.markdown`, `.mdx`, and related formats
-- **Queue-Based Processing**: Documents are processed in a queue, allowing semi-offline ingestion and chunking
-- **Ingestion Status Tracking**: Real-time status monitoring for each document in the ingestion queue
+No agents.\
+No tool wiring.\
+No orchestration.
 
-### 📚 Document Management
-- **File Ingestion**: Add individual files via drag-and-drop or file picker
-- **Folder Ingestion**: Add entire folders for batch processing
-- **File Watching**: Monitor files and folders for changes with automatic re-ingestion
-- **Recursive Folder Watching**: Option to watch folders recursively
+Just:
 
-### 🔎 Search & Retrieval
-- **Semantic Search**: World-class matching based on input queries and vector store
-- **MRU (Most Recently Used)**: Quick access to recent searches
-- **Chunk Inspection**: View content and metadata for retrieved chunks
+    Your app → Froggy → LLM (with context already injected)
 
-### 🤖 LLM Passthrough (RAG on chat completions)
+------------------------------------------------------------------------
 
-- **Local API surface**: With passthrough enabled, the app listens on configurable ports and proxies chat to your configured **upstream** (Ollama or OpenAI-compatible), after augmenting requests with retrieval from the active namespace or headers you send.
-- **Per-provider settings**: Separate base URL, model, and API key for Ollama vs OpenAI-style upstreams (see **Settings → LLM Passthrough**).
-- **Complements MCP**: MCP clients continue to use tools such as `search_vector_store`; passthrough is for HTTP clients that expect a normal **chat completions** endpoint with retrieval applied automatically.
+# 🚀 Why Froggy?
 
-### 🌐 MCP Server
-- **Dual Interfaces**: Both stdio and REST API interfaces
-- **RAG Tools**: Specialized tools for RAG operations
-- **Server Management**: Start/stop server with configurable port
-- **Request Logging**: Comprehensive logging of server requests and activities
+Most RAG systems make you:
 
-### 🎨 User Interface
-- **Modern Design**: Clean, intuitive interface with resizable panels
-- **Tree Navigation**: Organized navigation with four main sections:
-  - **Ingestion**: Manage files and folders
-  - **Vector Store**: View documents, chunks, and metadata
-  - **Search**: Perform semantic searches with MRU support
-  - **Server**: Control MCP server and view logs
-- **Persistent Settings**: Window state, splitter positions, and preferences are saved
+-   wire tools
+-   call retrieval APIs
+-   manage context manually
+-   or adopt a framework
 
-## Installation
+Froggy does this instead:
 
-### Pre-built Releases
+> **Intercept → Retrieve → Inject → Forward**
 
-Download the latest pre-built installer from our [releases page](https://github.com/deepblue523/froggy-mcp-rag/releases).
+Your existing clients don't change.\
+They just get smarter.
 
-### Manual Setup
+------------------------------------------------------------------------
 
-#### Prerequisites
-- Node.js (v16 or higher)
-- npm or yarn
+# 🧠 What it actually does
 
-#### Setup
+When a request comes in:
 
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd froggy-rag-mcp
-```
+1.  Understands the request\
+2.  Searches your selected namespace\
+3.  Pulls the most relevant context\
+4.  Optionally adds web search results\
+5.  Injects everything into the prompt\
+6.  Forwards to your LLM
 
-2. Install dependencies:
-```bash
-npm install
-```
+All automatically.
 
-3. The `postinstall` script rebuilds native modules (`better-sqlite3`, `sharp`) for the **installed Electron version** so they match the app runtime (not system Node).
+------------------------------------------------------------------------
 
-## Usage
+# 🧩 Core Concepts
 
-### Starting the Application
+## Namespaces
 
-**Development mode**:
-```bash
-npm run dev
-```
+    rxstream-sql
+    walgreens-hub
+    personal-notes
+    codebase
 
-To open DevTools automatically, launch Electron with `--open-devtools`.
+Each namespace has: - its own documents - its own embeddings - its own
+retrieval context
 
-**Production mode**:
-```bash
-npm start
-```
+Switch namespace → switch knowledge.
 
-### Building for Distribution
+------------------------------------------------------------------------
 
-```bash
-npm run build
-```
+## Passthrough API
 
-This will create distributable packages in the `dist` folder using electron-builder.
+Froggy exposes an **OpenAI-compatible endpoint**.
 
-## Application Structure
+You send:
 
-```
-froggy-rag-mcp/
-├── src/
-│   ├── main/              # Electron main process
-│   │   ├── main.js        # Main entry point
-│   │   ├── preload.js     # Preload script
-│   │   ├── ipc-handlers.js # IPC communication handlers
-│   │   └── services/      # Core services
-│   │       ├── rag-service.js        # RAG orchestration
-│   │       ├── mcp-service.js        # MCP server implementation
-│   │       ├── vector-store.js       # SQLite vector store
-│   │       ├── document-processor.js # Document parsing & chunking
-│   │       └── search-service.js     # Semantic search
-│   └── renderer/          # Electron renderer process (UI)
-│       ├── index.html     # Main HTML
-│       ├── app.js         # UI logic
-│       └── styles.css     # Styling
-├── docs/                  # Documentation
-└── package.json
-```
-
-## Data Storage
-
-All application data is stored in:
-```
-~/froggy-rag-mcp/data/
-```
-
-This includes:
-- Vector store database (SQLite)
-- Settings and preferences
-- Window state
-- Watched files and folders configuration
-
-## Supported File Formats
-
-- **Microsoft Word**: `.docx`
-- **Microsoft Excel**: `.xlsx`
-- **PDF**: `.pdf`
-- **CSV**: `.csv`
-- **Plain Text**: `.txt`
-- **HTML**: `.html`, `.htm`
-- **Markdown**: `.md`, `.markdown`, `.mdx`
-
-## MCP Server
-
-The MCP server provides three interfaces for integration with external applications:
-1. **REST API** - HTTP server for UI and external HTTP clients
-2. **Stdio Mode** - Standard input/output for MCP clients (Claude Desktop, etc.)
-3. **CLI Tool Mode** - Command-line interface for direct tool execution
-
-### REST API
-
-The REST server runs on a configurable port (default: 3000) and provides endpoints for:
-- Corpus search over the vector store
-- Vector store operations
-- RAG queries
-
-Start/stop the server from the UI, configure the server port, and view real-time logs of server activity.
-
-### Stdio Mode (For MCP Clients)
-
-Stdio mode allows MCP clients (like Claude Desktop) to spawn the server as a subprocess and communicate via stdin/stdout using JSON-RPC 2.0 protocol.
-
-**Usage:**
-```bash
-# Run in stdio mode (no arguments)
-npm run mcp-stdio
-
-# Or directly
-node src/cli/mcp-cli.js
-```
-
-**Configuration for MCP Clients:**
-
-For Claude Desktop, add to your MCP configuration file:
-```json
+``` json
 {
-  "mcpServers": {
-    "froggy-rag": {
-      "command": "node",
-      "args": ["path/to/froggy-rag-mcp/src/cli/mcp-cli.js"],
-      "env": {}
-    }
-  }
+  "messages": [
+    { "role": "user", "content": "Write a SQL query..." }
+  ]
 }
 ```
 
-The server reads JSON-RPC 2.0 messages line-by-line from stdin and writes responses to stdout.
+Froggy enriches and forwards.
 
-### CLI Tool Mode
+------------------------------------------------------------------------
 
-CLI tool mode allows you to execute MCP tools directly from the command line.
+## Prompt Profiles
 
-**Usage:**
-```bash
-# List all available tools
-npm run mcp tools list
+Reusable behavior templates: - sql-generation\
+- sql-modification\
+- general-rag
 
-# Call a tool with parameters
-npm run mcp call search --query "example query" --limit 5
+------------------------------------------------------------------------
 
-# Search directly (shortcut for vector search)
-npm run mcp search "example query" --limit 10 --algorithm hybrid
+## Tags & Metadata
 
-# Get statistics
-npm run mcp stats
-
-# Ingest a file
-npm run mcp call ingest_file --filePath "/path/to/file.pdf"
-
-# Get help
-npm run mcp help
+``` json
+"tags": ["patient", "phi"],
+"metadata": { "platform": "databricks" }
 ```
 
-**Commands:**
-- `tools list` - List all available tools
-- `call <tool-name> [--arg key=value] ...` - Call a tool with parameters
-- `search <query> [--limit N] [--algorithm]` - Search the vector store (shortcut)
-- `stats` - Get vector store statistics
-- `help` - Show help message
+------------------------------------------------------------------------
 
-**Examples:**
-```bash
-# List tools
-node src/cli/mcp-cli.js tools list
+# 🖥️ Desktop App
 
-# Search with hybrid algorithm
-node src/cli/mcp-cli.js search "machine learning" --limit 10 --algorithm hybrid
+-   Installer-based (Windows)
+-   Auto-updates
+-   Runs locally
+-   Includes UI + API
 
-# Get all documents
-node src/cli/mcp-cli.js call get_documents
+------------------------------------------------------------------------
 
-# Get chunks for a document
-node src/cli/mcp-cli.js call get_document_chunks --documentId "doc-123"
+# ⚙️ Installation
 
-# Ingest folder with watching
-node src/cli/mcp-cli.js call ingest_directory --dirPath "/path/to/docs" --recursive true --watch true
-```
+Download from GitHub releases:
+https://github.com/`<your-repo>`{=html}/releases
 
-### Available Tools (MCP protocol)
+------------------------------------------------------------------------
 
-The MCP server (`tools/list` / stdio / JSON-RPC) exposes:
+# ⚙️ Usage
 
-- `search_vector_store` — Semantic search over the vector store (`topK`, optional `namespace`, optional `filters` such as algorithm)
-- `get_document` — Fetch a document by ID (optional `namespace`)
-- `get_chunk` — Fetch a chunk by ID (optional `namespace`)
-- `list_documents` — Paginated document list (optional `namespace`)
-- `list_namespaces` — List corpus namespaces on disk
+Start app, then call:
 
-The **CLI** accepts `call search` as shorthand for `search_vector_store`, and `call get_documents` for `list_documents`. Commands such as **`call ingest_file`**, **`call ingest_directory`**, **`stats`**, and **`get_document_chunks`** use the local RAG service directly; they are **not** advertised as MCP tools to remote MCP clients.
+    http://localhost:<froggy port>/<just like Ollama>
+    http://localhost:<froggy port>/<just like OpenAI>
 
-For **chat with automatic retrieval**, use **LLM Passthrough** and the inbound HTTP endpoints in the app, not an MCP tool.
+------------------------------------------------------------------------
 
-### Server Management
+# 🐸 TL;DR
 
-- Start/stop the REST server from the UI
-- Configure the server port
-- View real-time logs of server activity
-- Stdio and CLI modes run independently of the Electron UI
-
-## Development
-
-### Key Technologies
-
-- **Electron**: Desktop application framework
-- **@xenova/transformers**: Embedding model (Xenova/all-MiniLM-L6-v2)
-- **better-sqlite3**: Vector store database
-- **Express**: REST API server
-- **chokidar**: File system watching
-- **pdf-parse, mammoth, exceljs, docx**: Document parsing libraries
-
-### Architecture
-
-- **Main Process**: Handles file system operations, database access, and service orchestration
-- **Renderer Process**: UI rendering and user interaction
-- **IPC Communication**: Secure communication between main and renderer processes
-- **Service Layer**: Modular services for RAG, MCP, vector storage, and search
-
-## License
-
-MIT
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Support
-
-For issues, questions, or feature requests, please open an issue on the repository.
+Froggy sits between your app and your LLM and makes every request
+smarter.

@@ -1,6 +1,6 @@
 # Distribution Guide
 
-This document explains how to create and use distribution packages for Froggy RAG MCP.
+This document explains how to create and use distribution packages for Froggy on RAG.
 
 ## Creating Distribution Packages
 

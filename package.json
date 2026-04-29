@@ -29,7 +29,7 @@
     "electron",
     "vector-store"
   ],
-  "author": "Froggy RAG MCP",
+  "author": "Froggy on RAG",
   "license": "MIT",
   "overrides": {
     "node-abi": "^4.28.0"
@@ -57,7 +57,7 @@
   },
   "build": {
     "appId": "com.froggy.ragmcp",
-    "productName": "Froggy RAG MCP",
+    "productName": "Froggy on RAG",
     "icon": "images/Froggy RAG.png",
     "directories": {
       "output": "dist"
