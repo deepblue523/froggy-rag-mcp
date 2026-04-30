@@ -5,7 +5,9 @@ param(
   [switch] $DryRun,
   [switch] $SkipPush,
   [switch] $AllowDirty,
-  [switch] $WithSourceDist
+  [switch] $WithSourceDist,
+  [switch] $SkipReleaseNotes,
+  [switch] $AllowMissingReleaseNotes
 )
 
 Set-StrictMode -Version Latest
@@ -17,5 +19,7 @@ if ($DryRun) { $argList += '--dry-run' }
 if ($SkipPush) { $argList += '--skip-push' }
 if ($AllowDirty) { $argList += '--allow-dirty' }
 if ($WithSourceDist) { $argList += '--with-source-dist' }
+if ($SkipReleaseNotes) { $argList += '--skip-release-notes' }
+if ($AllowMissingReleaseNotes) { $argList += '--allow-missing-release-notes' }
 
 node scripts/release.js @argList

@@ -10,10 +10,15 @@
  *   node scripts/release.js [patch|minor|major] [options]
  *
  * Options:
- *   --dry-run          Print steps only
- *   --skip-push        Commit and tag locally; build & publish; do not git push
- *   --allow-dirty      Allow uncommitted changes before starting
- *   --with-source-dist After publish, run scripts/create-dist.js (source bundle next to installers in dist/)
+ *   --dry-run                     Print steps only (release-notes patch runs in dry-run mode without API calls)
+ *   --skip-push                   Commit and tag locally; build & publish; do not git push
+ *   --allow-dirty                 Allow uncommitted changes before starting
+ *   --with-source-dist            After publish, run scripts/create-dist.js (source bundle next to installers in dist/)
+ *   --skip-release-notes          Do not PATCH the GitHub release (body + make_latest) after build:publish
+ *   --allow-missing-release-notes If release-notes/<tag>.md is missing, still set make_latest (keeps builder body)
+ *
+ * After electron-builder uploads artifacts, scripts/patch-github-release.js updates that tag's GitHub release:
+ * body from release-notes/vX.Y.Z.md and make_latest=true. Requires GH_TOKEN/GITHUB_TOKEN when not --dry-run.
  *
  * Auth: set GH_TOKEN or GITHUB_TOKEN for electron-builder GitHub publish (see package.json build.publish).
  */
@@ -129,6 +134,8 @@ const dryRun = flags.has('--dry-run');
 const skipPush = flags.has('--skip-push');
 const allowDirty = flags.has('--allow-dirty');
 const withSourceDist = flags.has('--with-source-dist');
+const skipReleaseNotes = flags.has('--skip-release-notes');
+const allowMissingReleaseNotes = flags.has('--allow-missing-release-notes');
 
 if (!dryRun && !hasGhToken()) {
   console.error(
@@ -161,6 +168,19 @@ run('git', ['commit', '-m', `chore: release ${tag}`], { dryRun, label: 'Commit' 
 run('git', ['tag', tag], { dryRun, label: 'Tag' });
 
 npm(['run', 'build:publish'], { dryRun, label: 'Build Windows installers and publish to GitHub' });
+
+if (!skipReleaseNotes) {
+  const patchScript = path.join(projectRoot, 'scripts', 'patch-github-release.js');
+  const patchArgs = [patchScript, '--tag', tag];
+  if (allowMissingReleaseNotes) patchArgs.push('--allow-missing-release-notes');
+  if (dryRun) patchArgs.push('--dry-run');
+  console.log(
+    `\n→ Apply release notes and mark GitHub release as latest${dryRun ? ' [dry-run]' : ''}`,
+  );
+  console.log(`  ${process.execPath} ${patchArgs.join(' ')}`);
+  const patchR = spawnSync(process.execPath, patchArgs, { cwd: projectRoot, stdio: 'inherit' });
+  if (patchR.status !== 0) process.exit(patchR.status ?? 1);
+}
 
 if (withSourceDist) {
   run(process.execPath, [path.join(projectRoot, 'scripts', 'create-dist.js')], {
