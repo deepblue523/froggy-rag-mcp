@@ -143,6 +143,7 @@ function getDefaultSettings() {
     retrievalMaxContextTokens: 0,
     searchProfiling: false,
     minimizeToTray: false,
+    autoStartOnSystemStartup: false,
     llmPassthroughEnabled: false,
     llmPassthroughProvider: 'ollama',
     /** @deprecated use per-provider fields; kept for one-shot migration from older settings.json */

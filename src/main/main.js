@@ -125,7 +125,7 @@ function attachServices() {
     (level, message, data) => mcpService.log(level, message, data),
     (entry) => mcpService.emit('request-log', entry)
   );
-  require('./ipc-handlers')(ipcMain, ragService, mcpService, () => dataDir, passthroughInbound);
+  require('./ipc-handlers')(ipcMain, ragService, mcpService, () => dataDir, passthroughInbound, applySystemStartupSetting);
   void passthroughInbound.syncFromSettings();
 }
 
@@ -138,7 +138,7 @@ async function destroyServices() {
     }
     passthroughInbound = null;
   }
-  require('./ipc-handlers')(ipcMain, null, null, () => dataDir, null);
+  require('./ipc-handlers')(ipcMain, null, null, () => dataDir, null, applySystemStartupSetting);
   if (mcpService) {
     try {
       await mcpService.stop();
@@ -202,6 +202,37 @@ function getMinimizeToTraySetting() {
   } catch (error) {
     console.error('Error reading minimize-to-tray setting:', error);
     return false;
+  }
+}
+
+function supportsSystemStartupToggle() {
+  return app.isPackaged && (process.platform === 'win32' || process.platform === 'darwin');
+}
+
+function applySystemStartupSetting(settingsLike) {
+  if (!supportsSystemStartupToggle()) return;
+  try {
+    const openAtLogin = Boolean(settingsLike && settingsLike.autoStartOnSystemStartup);
+    if (process.platform === 'win32') {
+      app.setLoginItemSettings({
+        openAtLogin,
+        path: process.execPath,
+        args: []
+      });
+      return;
+    }
+    app.setLoginItemSettings({ openAtLogin });
+  } catch (error) {
+    console.error('Error applying start-on-system-startup setting:', error);
+  }
+}
+
+function syncSystemStartupSettingFromDisk() {
+  try {
+    const settings = readMergedSettingsFromDisk(dataDir, paths.getAppSettingsPath());
+    applySystemStartupSetting(settings);
+  } catch (error) {
+    console.error('Error syncing start-on-system-startup setting from disk:', error);
   }
 }
 
@@ -684,10 +715,11 @@ app.on('before-quit', () => {
 app.whenReady().then(() => {
   createSplashWindow();
   initializeUserDataLayout();
+  syncSystemStartupSettingFromDisk();
   registerAutoUpdaterListeners();
 
   // Register IPC handlers with null refs so renderer calls can wait for services
-  require('./ipc-handlers')(ipcMain, null, null, () => dataDir, null);
+  require('./ipc-handlers')(ipcMain, null, null, () => dataDir, null, applySystemStartupSetting);
 
   createWindow();
   startDevReloadWatcher();

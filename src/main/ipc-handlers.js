@@ -16,6 +16,8 @@ let handlersRegistered = false;
 let getDataDirFn = null;
 /** @type {import('./services/passthrough-inbound-server').PassthroughInboundService | null} */
 let inboundPassthroughRef = null;
+/** @type {(settings?: Record<string, unknown>) => (void | Promise<void>) | null} */
+let onSettingsSavedFn = null;
 /** AbortController for in-flight LLM tab direct-IPC test (upstream fetch). */
 let llmPassthroughTestDirectAbortController = null;
 
@@ -96,12 +98,15 @@ function waitForServices() {
   return servicesReadyPromise;
 }
 
-module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getDataDir, inboundPassthrough) {
+module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getDataDir, inboundPassthrough, onSettingsSaved) {
   if (typeof getDataDir === 'function') {
     getDataDirFn = getDataDir;
   }
   if (arguments.length >= 5) {
     inboundPassthroughRef = inboundPassthrough || null;
+  }
+  if (typeof onSettingsSaved === 'function') {
+    onSettingsSavedFn = onSettingsSaved;
   }
   // Update service references if provided
   if (ragService && mcpService) {
@@ -282,6 +287,13 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
         await inboundPassthroughRef.syncFromSettings();
       } catch (e) {
         console.error('Inbound passthrough sync failed:', e);
+      }
+    }
+    if (typeof onSettingsSavedFn === 'function') {
+      try {
+        await onSettingsSavedFn(settings);
+      } catch (e) {
+        console.error('Post-save settings sync failed:', e);
       }
     }
     return out;

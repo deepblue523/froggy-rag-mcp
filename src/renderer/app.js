@@ -5116,6 +5116,10 @@ function applyAllSettingsModalFieldsToSettings(settings) {
   if (minimizeInput) {
     settings.minimizeToTray = minimizeInput.checked;
   }
+  const autoStartSystemStartupInput = document.getElementById('settings-auto-start-system-startup-input');
+  if (autoStartSystemStartupInput) {
+    settings.autoStartOnSystemStartup = autoStartSystemStartupInput.checked;
+  }
 
   const serverPortInput = document.getElementById('settings-server-port-input');
   const autoStartServerInput = document.getElementById('settings-auto-start-server-input');
@@ -5345,6 +5349,10 @@ async function loadGeneralSettings() {
   const input = document.getElementById('settings-minimize-to-tray-input');
   if (input) {
     input.checked = settings.minimizeToTray || false;
+  }
+  const startupInput = document.getElementById('settings-auto-start-system-startup-input');
+  if (startupInput) {
+    startupInput.checked = settings.autoStartOnSystemStartup === true;
   }
 }
 
