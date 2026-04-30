@@ -7,17 +7,6 @@ const express = require('express');
 const { completeChatProxy, getActiveLlmPassthroughUpstream } = require('./llm-passthrough');
 const { attachHttpRequestLogger } = require('./mcp-request-log');
 
-function corsMiddleware(req, res, next) {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Froggy-Namespace');
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(204);
-  } else {
-    next();
-  }
-}
-
 function readNamespaceFromReq(req) {
   const h = req.headers['x-froggy-namespace'];
   if (typeof h === 'string' && h.trim()) return h.trim();
@@ -59,7 +48,6 @@ class PassthroughInboundService {
 
   _ollamaApp() {
     const app = express();
-    app.use(corsMiddleware);
     app.use(express.json({ limit: '20mb' }));
     attachHttpRequestLogger(app, this.ragService, 'inbound-ollama', (entry) => {
       if (this._onRequestLogged) this._onRequestLogged(entry);
@@ -102,7 +90,6 @@ class PassthroughInboundService {
 
   _openAiApp() {
     const app = express();
-    app.use(corsMiddleware);
     app.use(express.json({ limit: '20mb' }));
     attachHttpRequestLogger(app, this.ragService, 'inbound-openai', (entry) => {
       if (this._onRequestLogged) this._onRequestLogged(entry);
