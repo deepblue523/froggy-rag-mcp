@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Froggy on RAG (v<span id="app-version"></span>)</title>
+  <title>Froggy on RAG (<span id="app-version"></span>)</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -21,7 +21,7 @@
     <header class="header">
       <div class="header-left">
         <img src="./images/Froggy RAG x32.png" alt="Froggy on RAG" style="width: 32px; height: 32px; flex-shrink: 0;">
-        <h1>Froggy on RAG <span style="font-size: 0.6em; font-weight: normal; color: #bdc3c7;">(v<span id="header-version"></span>)</span></h1>
+        <h1>Froggy on RAG <span style="font-size: 0.6em; font-weight: normal; color: #bdc3c7;">(<span id="header-version"></span>)</span></h1>
       </div>
       <div class="header-namespace">
         <label for="namespace-select" class="header-namespace-label">Namespace</label>
@@ -300,21 +300,7 @@
                 <div id="llm-passthrough-inbound-test-host-section" style="display: flex; flex-wrap: wrap; gap: 20px; align-items: center;">
                   <div>
                     <label for="llm-passthrough-test-inbound-host-preset-select" style="font-weight: 500; color: #616161; margin-right: 8px;">Inbound test target</label>
-                    <select id="llm-passthrough-test-inbound-host-preset-select" style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;">
-                      <option value="127.0.0.1">Loopback (127.0.0.1)</option>
-                      <option value="localhost">Localhost name</option>
-                      <option value="custom">Custom host…</option>
-                    </select>
-                  </div>
-                  <div id="llm-passthrough-test-inbound-host-custom-wrap" style="display: none; flex-wrap: wrap; gap: 12px; align-items: center;">
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                      <label for="llm-passthrough-test-inbound-host-mru-select" style="font-weight: 500; color: #616161;">Recent</label>
-                      <select id="llm-passthrough-test-inbound-host-mru-select" style="min-width: 180px; max-width: 280px; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;"></select>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                      <label for="llm-passthrough-test-inbound-host-custom-input" style="font-weight: 500; color: #616161;">New</label>
-                      <input type="text" id="llm-passthrough-test-inbound-host-custom-input" placeholder="e.g. 10.0.0.5 or [::1]" autocomplete="off" style="width: 200px; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; font-family: inherit;" />
-                    </div>
+                    <select id="llm-passthrough-test-inbound-host-preset-select" style="min-width: 280px; max-width: 100%; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;"></select>
                   </div>
                 </div>
                 <div>
@@ -332,7 +318,7 @@
                 </div>
               </div>
               <p style="margin: 12px 0 0 0; font-size: 12px; color: #757575; line-height: 1.5;">
-                Chunk count and ranking follow your <strong>Retrieval</strong> and <strong>Metadata &amp; Filtering</strong> settings. Top K and score thresholds apply here as well. <strong>Inbound test target</strong> applies only to the HTTP transport (same listener ports); use <code>localhost</code> or another host when debugging name resolution, tunnels, or remote listeners. Custom hosts are remembered in a <strong>5-entry MRU</strong> under Recent. <strong>Direct IPC</strong> skips the local HTTP listener; the retrieved-context preview is filled from the main process. Values are saved automatically when you change them.
+                Chunk count and ranking follow your <strong>Retrieval</strong> and <strong>Metadata &amp; Filtering</strong> settings. Top K and score thresholds apply here as well. <strong>Inbound test target</strong> applies only to the HTTP transport (same listener ports unless you set an explicit <code>:port</code> on the host); use <code>localhost</code> or another host when debugging name resolution, tunnels, or remote listeners. Use <strong>&lt;manage&gt;</strong> in the dropdown to add, edit, or remove up to five saved hosts. <strong>Direct IPC</strong> skips the local HTTP listener; the retrieved-context preview is filled from the main process. Values are saved automatically when you change them.
               </p>
             </div>
             <div id="llm-passthrough-config-hint" style="margin-bottom: 16px; padding: 12px 14px; background: #fff8e1; border: 1px solid #ffe082; border-radius: 4px; font-size: 13px; color: #5d4037; max-width: 900px;"></div>
@@ -408,66 +394,79 @@
         <!-- Server Canvas -->
         <div class="canvas" id="server-canvas" style="display: none;">
           <h2>Server</h2>
-          <div class="server-controls">
-            <div class="server-status" id="server-status">
-              <span>Status: <span id="server-status-text">Stopped</span></span>
-            </div>
-            <div class="server-actions">
-              <button class="btn btn-primary" id="start-server-btn">Start Server</button>
-              <button class="btn btn-danger" id="stop-server-btn" disabled>Stop Server</button>
-              <button class="btn btn-secondary" id="self-test-btn" disabled>Self Test</button>
-            </div>
-            <div id="inbound-passthrough-status" style="margin-top: 12px; font-size: 13px; color: #424242; white-space: pre-wrap; line-height: 1.45;"></div>
-            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e0e0e0; font-size: 13px; color: #757575;">
-              <p style="margin: 0;">Configure server settings (port, auto-start) in the <strong>Settings</strong> menu (⚙️).</p>
-            </div>
+          <div class="llm-canvas-tablist" role="tablist" aria-label="Server sections">
+            <button type="button" class="llm-canvas-tab is-active" role="tab" id="server-canvas-tab-status-btn" aria-controls="server-canvas-panel-status" aria-selected="true">Status</button>
+            <button type="button" class="llm-canvas-tab" role="tab" id="server-canvas-tab-log-btn" aria-controls="server-canvas-panel-log" aria-selected="false" tabindex="-1">Log</button>
           </div>
-          <div class="server-endpoints" id="server-endpoints" style="display: none;">
-            <h3>Server URLs</h3>
-            <div class="endpoints-info">
-              <div class="server-urls">
-                <div class="server-url-item">
-                  <div class="url-label">
-                    <strong>REST API URL:</strong>
-                  </div>
-                  <div class="url-value-container">
-                    <span class="url-value" id="rest-url-value"></span>
-                    <button class="btn btn-secondary btn-copy" data-url-type="rest" title="Copy to clipboard">
-                      📋 Copy
-                    </button>
-                  </div>
-                </div>
-                <div class="server-url-item">
-                  <div class="url-label">
-                    <strong>MCP Protocol URL:</strong>
-                  </div>
-                  <div class="url-value-container">
-                    <span class="url-value" id="mcp-url-value"></span>
-                    <button class="btn btn-secondary btn-copy" data-url-type="mcp" title="Copy to clipboard">
-                      📋 Copy
-                    </button>
-                  </div>
-                </div>
+          <div id="server-canvas-panel-status" class="llm-canvas-tabpanel" role="tabpanel" aria-labelledby="server-canvas-tab-status-btn">
+            <div class="server-controls">
+              <div class="server-status" id="server-status">
+                <span>Status: <span id="server-status-text">Stopped</span></span>
               </div>
-              <div class="endpoints-list">
-                <h4>REST API Endpoints:</h4>
-                <table class="endpoints-table">
-                  <thead>
-                    <tr>
-                      <th>Method</th>
-                      <th>Endpoint</th>
-                      <th>Description</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody id="endpoints-tbody"></tbody>
-                </table>
+              <div class="server-actions">
+                <button class="btn btn-primary" id="start-server-btn">Start Server</button>
+                <button class="btn btn-danger" id="stop-server-btn" disabled>Stop Server</button>
+                <button class="btn btn-secondary" id="self-test-btn" disabled>Self Test</button>
+              </div>
+              <div id="inbound-passthrough-status" style="margin-top: 12px; font-size: 13px; color: #424242; white-space: pre-wrap; line-height: 1.45;"></div>
+              <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e0e0e0; font-size: 13px; color: #757575;">
+                <p style="margin: 0;">Configure server settings (port, auto-start, logging) in the <strong>Settings</strong> menu (⚙️).</p>
               </div>
             </div>
+            <div class="server-endpoints" id="server-endpoints" style="display: none;">
+              <h3>Server URLs</h3>
+              <div class="endpoints-info">
+                <div class="server-urls">
+                  <div class="server-url-item">
+                    <div class="url-label">
+                      <strong>REST API URL:</strong>
+                    </div>
+                    <div class="url-value-container">
+                      <span class="url-value" id="rest-url-value"></span>
+                      <button class="btn btn-secondary btn-copy" data-url-type="rest" title="Copy to clipboard">
+                        📋 Copy
+                      </button>
+                    </div>
+                  </div>
+                  <div class="server-url-item">
+                    <div class="url-label">
+                      <strong>MCP Protocol URL:</strong>
+                    </div>
+                    <div class="url-value-container">
+                      <span class="url-value" id="mcp-url-value"></span>
+                      <button class="btn btn-secondary btn-copy" data-url-type="mcp" title="Copy to clipboard">
+                        📋 Copy
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div class="endpoints-list">
+                  <h4>REST API Endpoints:</h4>
+                  <table class="endpoints-table">
+                    <thead>
+                      <tr>
+                        <th>Method</th>
+                        <th>Endpoint</th>
+                        <th>Description</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="endpoints-tbody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="server-logs" id="server-logs">
-            <h3>Logs</h3>
-            <div class="log-container" id="log-container"></div>
+          <div id="server-canvas-panel-log" class="llm-canvas-tabpanel" role="tabpanel" aria-labelledby="server-canvas-tab-log-btn" hidden>
+            <p id="server-request-log-hint" style="margin: 0 0 12px 0; font-size: 13px; color: #616161; line-height: 1.45;">
+              HTTP requests to the MCP REST server and inbound LLM passthrough listeners appear here when logging is enabled.
+            </p>
+            <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap;">
+              <button type="button" class="btn btn-secondary" id="server-request-log-refresh-btn">Refresh</button>
+            </div>
+            <div class="server-logs" id="server-request-log-wrap">
+              <div class="log-container" id="server-request-log-container"></div>
+            </div>
           </div>
         </div>
 
@@ -500,6 +499,9 @@
                 </div>
                 <div class="settings-page-item" data-settings-page="server" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
                   <span style="font-weight: 500; color: #424242;">Server</span>
+                </div>
+                <div class="settings-page-item" data-settings-page="logging" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
+                  <span style="font-weight: 500; color: #424242;">Logging</span>
                 </div>
                 <div class="settings-page-item" data-settings-page="llm-passthrough" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
                   <span style="font-weight: 500; color: #424242;">LLM Passthrough</span>
@@ -830,6 +832,25 @@
                   </div>
                 </div>
 
+                <!-- Logging Settings Page -->
+                <div class="settings-page" id="settings-page-logging" style="display: none;">
+                  <h3 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 600; color: #2c3e50;">Logging</h3>
+                  <div class="server-settings-controls" style="padding: 20px; background: #f9f9f9; border-radius: 4px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
+                    <h4 style="margin: 0 0 15px 0; font-size: 16px; font-weight: 600; color: #424242;">HTTP request log</h4>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+                      <input type="checkbox" id="settings-mcp-request-logging-enabled-input" style="width: 18px; height: 18px; cursor: pointer;" />
+                      <label for="settings-mcp-request-logging-enabled-input" style="font-weight: 500; color: #616161; cursor: pointer;">Log MCP REST and inbound passthrough requests</label>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px;">
+                      <label for="settings-mcp-request-log-retention-days-input" style="font-weight: 500; color: #616161;">Retention period (days)</label>
+                      <input type="number" id="settings-mcp-request-log-retention-days-input" min="1" max="3650" step="1" value="7" style="width: 90px; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;" />
+                    </div>
+                    <p style="margin: 0; font-size: 12px; color: #757575; line-height: 1.5;">
+                      When enabled, each request is recorded with method, path, status, duration, and source. Entries are stored under your Froggy data folder and trimmed to the retention window (max 10,000 lines). View the live rolling log on the <strong>Server</strong> screen, <strong>Log</strong> tab.
+                    </p>
+                  </div>
+                </div>
+
                 <!-- LLM Passthrough Settings Page -->
                 <div class="settings-page" id="settings-page-llm-passthrough" style="display: none;">
                   <h3 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 600; color: #2c3e50;">LLM Passthrough Settings</h3>
@@ -1072,6 +1093,26 @@
             </div>
             <div class="modal-footer">
               <button type="button" class="btn btn-secondary" id="namespaces-modal-done">Close</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Inbound test hosts (LLM canvas) -->
+        <div class="modal-overlay" id="llm-inbound-hosts-modal-overlay" style="display: none;">
+          <div class="modal-dialog" id="llm-inbound-hosts-modal" style="max-width: 560px; width: 90%;">
+            <div class="modal-header">
+              <h3>Inbound test hosts</h3>
+              <button type="button" class="modal-close" id="llm-inbound-hosts-modal-close" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 16px;">
+              <p style="margin: 0 0 12px 0; font-size: 13px; color: #616161;">Saved hosts appear in <strong>Inbound test target</strong> (up to five). Optional port: <code>host:11434</code> or <code>[::1]:11434</code>.</p>
+              <div id="llm-inbound-hosts-manage-list"></div>
+              <div id="llm-inbound-hosts-modal-error" style="display: none; margin-top: 10px; padding: 8px 10px; background: #ffebee; border: 1px solid #ffcdd2; border-radius: 4px; font-size: 13px; color: #c62828;"></div>
+              <button type="button" class="btn btn-secondary" id="llm-inbound-hosts-modal-add" style="margin-top: 12px;">Add host</button>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" id="llm-inbound-hosts-modal-cancel">Cancel</button>
+              <button type="button" class="btn btn-primary" id="llm-inbound-hosts-modal-save">Save</button>
             </div>
           </div>
         </div>

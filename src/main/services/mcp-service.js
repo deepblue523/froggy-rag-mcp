@@ -5,6 +5,7 @@ const { mountMcpRoutes } = require('./mcp/mcp-routes');
 const { MCPToolRegistry } = require('./mcp/mcp-tool-registry');
 const { createMCPJsonRpcHandler } = require('./mcp/mcp-json-rpc-handler');
 const { inferDefaultCorpusNamespaceName } = require('./mcp/namespace-scope');
+const { attachHttpRequestLogger } = require('./mcp-request-log');
 
 class MCPService extends EventEmitter {
   constructor(ragService) {
@@ -54,6 +55,9 @@ class MCPService extends EventEmitter {
 
     this.restServer = express();
     this.restServer.use(express.json());
+    attachHttpRequestLogger(this.restServer, this.ragService, 'mcp-rest', (entry) =>
+      this.emit('request-log', entry)
+    );
 
     this.restServer.use((req, res, next) => {
       res.header('Access-Control-Allow-Origin', '*');

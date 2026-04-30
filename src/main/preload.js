@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // App version
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  isDevelopmentEnvironment: () => ipcRenderer.invoke('is-development-environment'),
   
   // RAG Service
   ingestFile: (filePath, watch) => ipcRenderer.invoke('ingest-file', filePath, watch),
@@ -70,6 +71,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopMCPServer: () => ipcRenderer.invoke('stop-mcp-server'),
   getMCPServerStatus: () => ipcRenderer.invoke('get-mcp-server-status'),
   getMCPServerLogs: () => ipcRenderer.invoke('get-mcp-server-logs'),
+  getMCPServerRequestLogs: (limit) => ipcRenderer.invoke('get-mcp-server-request-logs', limit),
   
   // Settings
   getSettings: () => ipcRenderer.invoke('get-settings'),
@@ -108,6 +110,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onMCPServerLog: (callback) => {
     ipcRenderer.on('mcp-server-log', (_, data) => callback(data));
+  },
+  onMCPServerRequestLog: (callback) => {
+    ipcRenderer.on('mcp-server-request-log', (_, data) => callback(data));
   },
   
   // Auto-update (GitHub Releases via electron-builder `build.publish`)

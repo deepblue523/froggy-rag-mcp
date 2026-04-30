@@ -1503,6 +1503,12 @@ input[type="checkbox"] {
   color: #d4d4d4;
 }
 
+.server-request-log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12px;
+}
+
 /* Folder Files Display */
 .directory-path-link {
   cursor: pointer;

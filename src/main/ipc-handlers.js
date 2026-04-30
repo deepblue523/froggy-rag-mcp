@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const appPaths = require('../paths');
 const { readJsonObject } = require('../settings-files');
+const { getRequestLogs } = require('./services/mcp-request-log');
 
 // Helper to wait for services to be ready
 let ragServiceRef = null;
@@ -252,6 +253,11 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
   ipcMain.handle('get-mcp-server-logs', async () => {
     await waitForServices();
     return mcpServiceRef.getLogs();
+  });
+
+  ipcMain.handle('get-mcp-server-request-logs', async (_, limit) => {
+    await waitForServices();
+    return getRequestLogs(ragServiceRef, limit);
   });
 
   // Settings handlers
@@ -513,6 +519,7 @@ function setupEventListeners(ragService, mcpService) {
   // Remove existing listeners to avoid duplicates
   ragService.removeAllListeners('ingestion-update');
   mcpService.removeAllListeners('log');
+  mcpService.removeAllListeners('request-log');
   
   ragService.on('ingestion-update', (data) => {
     try {
@@ -540,6 +547,19 @@ function setupEventListeners(ragService, mcpService) {
       // This can happen during long processing sequences if the window is closed
       if (!error.message.includes('Render frame was disposed')) {
         console.error('Error sending mcp-server-log:', error);
+      }
+    }
+  });
+
+  mcpService.on('request-log', (entry) => {
+    try {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (window && !window.isDestroyed() && window.webContents && !window.webContents.isDestroyed()) {
+        window.webContents.send('mcp-server-request-log', entry);
+      }
+    } catch (error) {
+      if (!error.message.includes('Render frame was disposed')) {
+        console.error('Error sending mcp-server-request-log:', error);
       }
     }
   });

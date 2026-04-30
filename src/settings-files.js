@@ -157,11 +157,11 @@ function getDefaultSettings() {
     llmPassthroughOpenAiApiKey: '',
     llmPassthroughTimeoutMs: 120000,
     llmPassthroughSearchAlgorithm: 'hybrid',
-    /** Hostname (or bracketed IPv6) for the LLM tab's inbound HTTP test only; path/port still come from listener settings. */
+    /** Hostname (or bracketed IPv6), optional explicit :port, for the LLM tab's inbound HTTP test URL authority only. */
     llmPassthroughTestInboundHostname: '127.0.0.1',
     /** LLM tab: `inbound-http` POSTs to local listener; `direct-ipc` calls main via IPC (same pipeline). */
     llmPassthroughTestTransport: 'inbound-http',
-    /** @type {string[]} Up to 5 recent custom inbound test hosts (loopback/localhost are not stored). */
+    /** @type {string[]} Up to 5 saved custom inbound test hosts for the LLM test target dropdown (loopback/localhost are not stored). */
     llmPassthroughTestInboundHostMru: [],
     googleCustomSearchApiKey: '',
     googleCustomSearchEngineId: '',
@@ -173,7 +173,11 @@ function getDefaultSettings() {
     passthroughOllamaListenEnabled: false,
     passthroughOllamaListenPort: 11435,
     passthroughOpenAiListenEnabled: false,
-    passthroughOpenAiListenPort: 18080
+    passthroughOpenAiListenPort: 18080,
+    /** When true, MCP REST and inbound passthrough HTTP requests are appended to a rolling on-disk log. */
+    mcpRequestLoggingEnabled: false,
+    /** Entries older than this many days are dropped when the log is updated or read. */
+    mcpRequestLogRetentionDays: 7
   };
 }
 

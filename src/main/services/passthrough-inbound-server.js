@@ -5,6 +5,7 @@
 
 const express = require('express');
 const { completeChatProxy, getActiveLlmPassthroughUpstream } = require('./llm-passthrough');
+const { attachHttpRequestLogger } = require('./mcp-request-log');
 
 function corsMiddleware(req, res, next) {
   res.header('Access-Control-Allow-Origin', '*');
@@ -40,10 +41,12 @@ class PassthroughInboundService {
   /**
    * @param {*} ragService
    * @param {(level: string, message: string, data?: object) => void} [log]
+   * @param {(entry: object) => void} [onRequestLogged]
    */
-  constructor(ragService, log) {
+  constructor(ragService, log, onRequestLogged) {
     this.ragService = ragService;
     this.log = log || (() => {});
+    this._onRequestLogged = typeof onRequestLogged === 'function' ? onRequestLogged : null;
     /** @type {import('http').Server | null} */
     this._ollamaServer = null;
     /** @type {import('http').Server | null} */
@@ -58,6 +61,9 @@ class PassthroughInboundService {
     const app = express();
     app.use(corsMiddleware);
     app.use(express.json({ limit: '20mb' }));
+    attachHttpRequestLogger(app, this.ragService, 'inbound-ollama', (entry) => {
+      if (this._onRequestLogged) this._onRequestLogged(entry);
+    });
 
     app.get('/api/tags', (req, res) => {
       try {
@@ -98,6 +104,9 @@ class PassthroughInboundService {
     const app = express();
     app.use(corsMiddleware);
     app.use(express.json({ limit: '20mb' }));
+    attachHttpRequestLogger(app, this.ragService, 'inbound-openai', (entry) => {
+      if (this._onRequestLogged) this._onRequestLogged(entry);
+    });
 
     app.get('/v1/models', (req, res) => {
       try {

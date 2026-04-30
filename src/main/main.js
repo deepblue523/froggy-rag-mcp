@@ -120,8 +120,10 @@ function attachServices() {
   const { PassthroughInboundService } = require('./services/passthrough-inbound-server');
   ragService = new RAGService(dataDir);
   mcpService = new MCPService(ragService);
-  passthroughInbound = new PassthroughInboundService(ragService, (level, message, data) =>
-    mcpService.log(level, message, data)
+  passthroughInbound = new PassthroughInboundService(
+    ragService,
+    (level, message, data) => mcpService.log(level, message, data),
+    (entry) => mcpService.emit('request-log', entry)
   );
   require('./ipc-handlers')(ipcMain, ragService, mcpService, () => dataDir, passthroughInbound);
   void passthroughInbound.syncFromSettings();
@@ -420,7 +422,9 @@ function createWindow() {
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
     },
-    title: `Froggy on RAG (v${app.getVersion()})`,
+    title: isDevelopmentEnvironment()
+      ? 'Froggy on RAG (dev mode)'
+      : `Froggy on RAG (v${app.getVersion()})`,
     autoHideMenuBar: true,
     icon: path.join(__dirname, '..', 'renderer', 'images', 'Froggy RAG x32.png')
   });
@@ -720,6 +724,7 @@ ipcMain.on('tray-settings-changed', () => {
 
 ipcMain.handle('get-data-dir', () => dataDir);
 ipcMain.handle('get-app-version', () => app.getVersion());
+ipcMain.handle('is-development-environment', () => isDevelopmentEnvironment());
 
 ipcMain.handle('namespace-list', () => paths.listNamespaceDirNames());
 ipcMain.handle('namespace-get-active', () => currentNamespaceName);

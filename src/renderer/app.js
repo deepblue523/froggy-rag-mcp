@@ -24,8 +24,8 @@ let llmPassthroughSendCancelFn = null;
 let llmPassthroughSendUserCancelled = false;
 
 const LLM_INBOUND_TEST_HOST_MRU_MAX = 5;
-/** Select value for "type a host not in the MRU list" */
-const LLM_INBOUND_TEST_HOST_MRU_NEW = '__mru_new__';
+/** Synthetic dropdown value; opens manage dialog (not a hostname). */
+const LLM_INBOUND_TEST_HOST_SELECT_MANAGE = '__manage__';
 
 const LLM_TESTER_CHATS_KEY = 'froggyLlmTesterChatsV1';
 const LLM_TESTER_MAX_CHATS = 35;
@@ -524,6 +524,7 @@ function maybeUpgradeLlmTesterTitleFromMessages(chat) {
 
 let llmTesterChatSelectListenerBound = false;
 let llmCanvasTabsListenerBound = false;
+let serverCanvasTabsListenerBound = false;
 
 function renderLlmTesterChatSelect() {
   const sel = document.getElementById('llm-tester-chat-select');
@@ -658,6 +659,57 @@ function setupLlmCanvasTabsOnce() {
       activateLlmCanvasTab(next.key);
       next.btn.focus();
     });
+  }
+}
+
+function setupServerCanvasTabsOnce() {
+  if (serverCanvasTabsListenerBound) return;
+  const btnStatus = document.getElementById('server-canvas-tab-status-btn');
+  const btnLog = document.getElementById('server-canvas-tab-log-btn');
+  const panelStatus = document.getElementById('server-canvas-panel-status');
+  const panelLog = document.getElementById('server-canvas-panel-log');
+  if (!btnStatus || !btnLog || !panelStatus || !panelLog) return;
+  serverCanvasTabsListenerBound = true;
+
+  /**
+   * @param {'status' | 'log'} which
+   */
+  function activateServerCanvasTab(which) {
+    const showLog = which === 'log';
+    btnStatus.classList.toggle('is-active', !showLog);
+    btnLog.classList.toggle('is-active', showLog);
+    btnStatus.setAttribute('aria-selected', showLog ? 'false' : 'true');
+    btnLog.setAttribute('aria-selected', showLog ? 'true' : 'false');
+    btnStatus.tabIndex = showLog ? -1 : 0;
+    btnLog.tabIndex = showLog ? 0 : -1;
+    panelStatus.hidden = showLog;
+    panelLog.hidden = !showLog;
+    if (showLog) {
+      void refreshServerRequestLogs();
+    }
+  }
+
+  btnStatus.addEventListener('click', () => activateServerCanvasTab('status'));
+  btnLog.addEventListener('click', () => activateServerCanvasTab('log'));
+
+  const tabOrder = [
+    { key: 'status', btn: btnStatus },
+    { key: 'log', btn: btnLog }
+  ];
+  for (let i = 0; i < tabOrder.length; i++) {
+    tabOrder[i].btn.addEventListener('keydown', (e) => {
+      if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(e.key)) return;
+      e.preventDefault();
+      const delta = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1;
+      const next = tabOrder[(i + delta + tabOrder.length) % tabOrder.length];
+      activateServerCanvasTab(next.key);
+      next.btn.focus();
+    });
+  }
+
+  const refreshBtn = document.getElementById('server-request-log-refresh-btn');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => void refreshServerRequestLogs());
   }
 }
 
@@ -1197,15 +1249,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 async function initializeApp() {
-  // Load and display app version
+  // Load and display app version (or dev-mode label in title bar / header)
   try {
-    const version = await window.electronAPI.getAppVersion();
+    const [version, isDev] = await Promise.all([
+      window.electronAPI.getAppVersion(),
+      window.electronAPI.isDevelopmentEnvironment()
+    ]);
+    const versionLabel = isDev ? 'dev mode' : `v${version}`;
     const versionElements = document.querySelectorAll('#app-version, #header-version');
     versionElements.forEach(el => {
-      if (el) el.textContent = version;
+      if (el) el.textContent = versionLabel;
     });
-    // Update page title
-    document.title = `Froggy on RAG (v${version})`;
+    document.title = `Froggy on RAG (${versionLabel})`;
   } catch (error) {
     console.error('Error loading app version:', error);
   }
@@ -1265,8 +1320,8 @@ async function initializeApp() {
     await refreshVectorStore();
   });
 
-  window.electronAPI.onMCPServerLog((data) => {
-    addServerLog(data);
+  window.electronAPI.onMCPServerRequestLog((entry) => {
+    appendServerRequestLogRow(entry);
   });
 
   if (window.electronAPI.onNamespaceChanged) {
@@ -1484,42 +1539,23 @@ function setupEventListeners() {
   }
 
   const llmInboundHostPreset = document.getElementById('llm-passthrough-test-inbound-host-preset-select');
-  const llmInboundHostCustomWrap = document.getElementById('llm-passthrough-test-inbound-host-custom-wrap');
   if (llmInboundHostPreset) {
-    llmInboundHostPreset.addEventListener('change', async () => {
-      if (llmInboundHostCustomWrap) {
-        llmInboundHostCustomWrap.style.display =
-          llmInboundHostPreset.value === 'custom' ? 'flex' : 'none';
+    llmInboundHostPreset.addEventListener('change', () => {
+      if (llmInboundHostPreset.value === LLM_INBOUND_TEST_HOST_SELECT_MANAGE) {
+        const prev = llmInboundHostPreset.dataset.lastStableValue || '127.0.0.1';
+        llmInboundHostPreset.value = prev;
+        void openLlmInboundTestHostManageDialog();
+        return;
       }
-      if (llmInboundHostPreset.value === 'custom') {
-        try {
-          const s = await window.electronAPI.getSettings();
-          refreshLlmTestInboundHostMruSelect(s);
-        } catch (e) {
-          console.error('refresh inbound host MRU on preset change', e);
-        }
-      }
-      void persistLlmTestRetrievalSettingsFromInputs();
-    });
-  }
-  const llmInboundHostMru = document.getElementById('llm-passthrough-test-inbound-host-mru-select');
-  if (llmInboundHostMru) {
-    llmInboundHostMru.addEventListener('change', () => {
-      const customInClear = document.getElementById('llm-passthrough-test-inbound-host-custom-input');
-      if (llmInboundHostMru.value !== LLM_INBOUND_TEST_HOST_MRU_NEW && customInClear) {
-        customInClear.value = '';
-      }
+      llmInboundHostPreset.dataset.lastStableValue = llmInboundHostPreset.value;
       schedulePersistLlmTestRetrievalSettings();
     });
   }
-  const llmInboundHostCustom = document.getElementById('llm-passthrough-test-inbound-host-custom-input');
-  if (llmInboundHostCustom) {
-    llmInboundHostCustom.addEventListener('change', () => schedulePersistLlmTestRetrievalSettings());
-    llmInboundHostCustom.addEventListener('input', () => schedulePersistLlmTestRetrievalSettings());
-  }
+  setupLlmInboundTestHostManageModalOnce();
 
   setupLlmTesterChatControlsOnce();
   setupLlmCanvasTabsOnce();
+  setupServerCanvasTabsOnce();
   setupLlmApiControlsOnce();
 
   const llmPassthroughEnabledInput = document.getElementById('settings-llm-passthrough-enabled-input');
@@ -2125,7 +2161,7 @@ function showCanvas(canvasName) {
     case 'server':
       document.getElementById('server-canvas').style.display = 'block';
       refreshServerStatus();
-      refreshServerLogs();
+      void refreshServerRequestLogs();
       break;
   }
 }
@@ -3539,30 +3575,59 @@ function setupCopyButtons() {
   });
 }
 
-async function refreshServerLogs() {
-  const logs = await window.electronAPI.getMCPServerLogs(100);
-  const container = document.getElementById('log-container');
-  
+async function refreshServerRequestLogs() {
+  const hint = document.getElementById('server-request-log-hint');
+  const container = document.getElementById('server-request-log-container');
+  if (!container) return;
+
+  let settings = {};
+  try {
+    settings = await window.electronAPI.getSettings();
+  } catch (_) {
+    /* ignore */
+  }
+
+  if (hint) {
+    hint.textContent = settings.mcpRequestLoggingEnabled
+      ? 'HTTP requests to the MCP REST server and inbound LLM passthrough listeners are recorded below (newest at bottom).'
+      : 'Request logging is off. Enable it under Settings → Logging, then use Refresh to load entries.';
+  }
+
   container.innerHTML = '';
-  logs.forEach(log => {
-    addServerLog(log);
-  });
+  if (!settings.mcpRequestLoggingEnabled) {
+    return;
+  }
+
+  try {
+    const logs = await window.electronAPI.getMCPServerRequestLogs(1500);
+    if (Array.isArray(logs)) {
+      logs.forEach((row) => appendServerRequestLogRow(row, false));
+    }
+  } catch (error) {
+    console.error('Error loading request logs:', error);
+  }
+  container.scrollTop = container.scrollHeight;
 }
 
-function addServerLog(log) {
-  const container = document.getElementById('log-container');
-  const entry = document.createElement('div');
-  entry.className = 'log-entry';
-  
-  const levelClass = `log-level-${log.level}`;
-  entry.innerHTML = `
-    <span class="log-timestamp">${new Date(log.timestamp).toLocaleTimeString()}</span>
-    <span class="${levelClass}">[${log.level.toUpperCase()}]</span>
-    <span class="log-message">${log.message}</span>
-  `;
-  
-  container.appendChild(entry);
-  container.scrollTop = container.scrollHeight;
+/**
+ * @param {object} entry
+ * @param {boolean} [autoScroll]
+ */
+function appendServerRequestLogRow(entry, autoScroll = true) {
+  const container = document.getElementById('server-request-log-container');
+  if (!container || !entry) return;
+
+  const row = document.createElement('div');
+  row.className = 'log-entry server-request-log-line';
+  const ts = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '';
+  const sc = entry.statusCode != null ? entry.statusCode : '';
+  const ms = entry.durationMs != null ? `${entry.durationMs}ms` : '';
+  const src = entry.source ? String(entry.source) : '';
+  row.textContent = `${ts}  ${entry.method || ''} ${entry.path || ''}  ${sc}  ${ms}  [${src}]`;
+  container.appendChild(row);
+  if (autoScroll) {
+    container.scrollTop = container.scrollHeight;
+  }
 }
 
 // Global functions for inline handlers
@@ -3872,6 +3937,17 @@ async function loadServerSettings() {
     autoStartServerInput.checked = settings.autoStartServer || false;
   }
 
+  const mcpReqLogEn = document.getElementById('settings-mcp-request-logging-enabled-input');
+  if (mcpReqLogEn) {
+    mcpReqLogEn.checked = settings.mcpRequestLoggingEnabled === true;
+  }
+  const mcpReqLogDays = document.getElementById('settings-mcp-request-log-retention-days-input');
+  if (mcpReqLogDays) {
+    const d = parseInt(String(settings.mcpRequestLogRetentionDays), 10);
+    mcpReqLogDays.value =
+      Number.isFinite(d) && d >= 1 ? String(Math.min(3650, d)) : '7';
+  }
+
   fillLlmPassthroughDraftFromSettings(settings);
   const provider = document.getElementById('settings-llm-passthrough-provider-select');
   if (provider) {
@@ -4051,23 +4127,9 @@ async function loadLlmTestPanelRetrievalSettings() {
     const a = settings.llmPassthroughSearchAlgorithm || 'hybrid';
     algo.value = ['hybrid', 'bm25', 'tfidf', 'vector'].includes(a) ? a : 'hybrid';
   }
-  const h = String(settings.llmPassthroughTestInboundHostname || '127.0.0.1').trim() || '127.0.0.1';
   const preset = document.getElementById('llm-passthrough-test-inbound-host-preset-select');
-  const customWrap = document.getElementById('llm-passthrough-test-inbound-host-custom-wrap');
   if (preset) {
-    if (h === '127.0.0.1') {
-      preset.value = '127.0.0.1';
-    } else if (h.toLowerCase() === 'localhost') {
-      preset.value = 'localhost';
-    } else {
-      preset.value = 'custom';
-    }
-  }
-  if (customWrap) {
-    customWrap.style.display = preset && preset.value === 'custom' ? 'flex' : 'none';
-  }
-  if (preset && preset.value === 'custom') {
-    refreshLlmTestInboundHostMruSelect(settings);
+    rebuildInboundTestTargetSelect(settings);
   }
 }
 
@@ -4080,28 +4142,99 @@ function schedulePersistLlmTestRetrievalSettings() {
   }, 450);
 }
 
+const LLM_INBOUND_HOST_BAD_CHARS = /[\s\u0000-\u001f\/\\]/;
+/** Max stored value length (hostname, bracketed IPv6, or host with optional :port). */
+const LLM_INBOUND_HOST_STORE_MAX = 280;
+
+/**
+ * Optional explicit port: `hostname:443`, `10.0.0.1:8080`, or `[::1]:11434`.
+ * Unbracketed IPv6 with a port is rejected (use bracketed form).
+ * @param {string} t trimmed non-empty full value
+ * @returns {{ hostPart: string, port: number } | null | 'invalid'} null = no trailing port
+ */
+function tryParseLlmPassthroughTestInboundExplicitPort(t) {
+  const bracket = /^\[([^\]]+)\]:(\d+)$/.exec(t);
+  if (bracket) {
+    const port = parseInt(bracket[2], 10);
+    if (!Number.isFinite(port) || port < 1 || port > 65535) return 'invalid';
+    return { hostPart: bracket[1].trim(), port };
+  }
+  const idx = t.lastIndexOf(':');
+  if (idx <= 0) return null;
+  const portStr = t.slice(idx + 1);
+  if (!/^\d{1,5}$/.test(portStr)) return null;
+  const port = parseInt(portStr, 10);
+  if (!Number.isFinite(port) || port < 1 || port > 65535) return 'invalid';
+  const hostPart = t.slice(0, idx).trim();
+  if (!hostPart || hostPart.includes(':')) return null;
+  return { hostPart, port };
+}
+
+/**
+ * @param {string} hostPart host without user :port (may contain colons for IPv6)
+ * @returns {boolean}
+ */
+function isValidLlmPassthroughTestInboundHostPart(hostPart) {
+  if (!hostPart || hostPart.length > 253) return false;
+  if (LLM_INBOUND_HOST_BAD_CHARS.test(hostPart)) return false;
+  return true;
+}
+
 /**
  * @param {unknown} raw
- * @returns {string | null} trimmed hostname / bracketed IPv6, or null if invalid
+ * @returns {string | null} trimmed hostname / bracketed IPv6 / host:port / [ipv6]:port, or null if invalid
  */
 function normalizeLlmPassthroughTestInboundHostname(raw) {
   const t = String(raw == null ? '' : raw).trim();
   if (!t) return null;
+  if (t === LLM_INBOUND_TEST_HOST_SELECT_MANAGE) return null;
+  if (t.length > LLM_INBOUND_HOST_STORE_MAX) return null;
+  if (LLM_INBOUND_HOST_BAD_CHARS.test(t)) return null;
+  const portSpec = tryParseLlmPassthroughTestInboundExplicitPort(t);
+  if (portSpec === 'invalid') return null;
+  if (portSpec) {
+    if (!isValidLlmPassthroughTestInboundHostPart(portSpec.hostPart)) return null;
+    if (/^\[[^\]]+\]:/.test(t)) {
+      return `[${portSpec.hostPart}]:${portSpec.port}`;
+    }
+    return `${portSpec.hostPart}:${portSpec.port}`;
+  }
   if (t.length > 253) return null;
-  if (/[\s\u0000-\u001f\/\\]/.test(t)) return null;
+  if (!isValidLlmPassthroughTestInboundHostPart(t)) return null;
   return t;
 }
 
 /**
- * @param {unknown} hostname normalized or stored hostname
- * @returns {string} host portion safe inside http://HOST:port/…
+ * @param {unknown} hostname host only (no trailing :port); bracket IPv6 when needed
+ * @returns {string} host portion safe inside http://HOST:listenerPort/…
  */
 function formatHostnameForInboundTestUrl(hostname) {
   const n = normalizeLlmPassthroughTestInboundHostname(hostname);
   const t = n || '127.0.0.1';
+  const spec = tryParseLlmPassthroughTestInboundExplicitPort(t);
+  if (spec && spec !== 'invalid') {
+    return formatHostnameForInboundTestUrl(spec.hostPart);
+  }
   if (t.startsWith('[')) return t;
   if (/^[0-9A-Fa-f:]+$/.test(t) && t.includes(':')) return `[${t}]`;
   return t;
+}
+
+/**
+ * HTTP authority (host[:port]) for inbound test URLs. Omits listener port when the
+ * stored target already includes an explicit port (e.g. tunnel on a different port).
+ * @param {unknown} inboundHostname
+ * @param {number} listenerPort
+ * @returns {string}
+ */
+function inboundPassthroughTestUrlAuthority(inboundHostname, listenerPort) {
+  const n = normalizeLlmPassthroughTestInboundHostname(inboundHostname);
+  const base = n || '127.0.0.1';
+  const portSpec = tryParseLlmPassthroughTestInboundExplicitPort(base);
+  if (portSpec && portSpec !== 'invalid') {
+    return `${formatHostnameForInboundTestUrl(portSpec.hostPart)}:${portSpec.port}`;
+  }
+  return `${formatHostnameForInboundTestUrl(base)}:${listenerPort}`;
 }
 
 /**
@@ -4117,7 +4250,7 @@ function sanitizeLlmPassthroughTestInboundHostMru(raw) {
     if (!n) continue;
     const low = n.toLowerCase();
     if (low === '127.0.0.1' || low === 'localhost') continue;
-    if (n === LLM_INBOUND_TEST_HOST_MRU_NEW) continue;
+    if (n === LLM_INBOUND_TEST_HOST_SELECT_MANAGE) continue;
     if (seen.has(low)) continue;
     seen.add(low);
     out.push(n);
@@ -4162,52 +4295,234 @@ function recordLlmPassthroughTestInboundHostMru(settings, host) {
 }
 
 /**
- * Rebuild Recent dropdown from settings and align selection + New field with stored hostname.
+ * Rebuild Inbound test target dropdown: loopback, localhost, saved hosts, then &lt;manage&gt;.
  * @param {Record<string, unknown>} settings
  */
-function refreshLlmTestInboundHostMruSelect(settings) {
-  const sel = document.getElementById('llm-passthrough-test-inbound-host-mru-select');
-  const customIn = document.getElementById('llm-passthrough-test-inbound-host-custom-input');
+function rebuildInboundTestTargetSelect(settings) {
+  const sel = document.getElementById('llm-passthrough-test-inbound-host-preset-select');
   if (!sel) return;
+  const storedRaw = String(settings.llmPassthroughTestInboundHostname || '').trim() || '127.0.0.1';
   const mru = sanitizeLlmPassthroughTestInboundHostMru(settings.llmPassthroughTestInboundHostMru);
-  const stored = String(settings.llmPassthroughTestInboundHostname || '').trim();
+
   sel.textContent = '';
-  for (const host of mru) {
-    const opt = document.createElement('option');
-    opt.value = host;
-    opt.textContent = host;
-    sel.appendChild(opt);
+  /** @param {string} value @param {string} label */
+  function addOpt(value, label) {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    sel.appendChild(o);
   }
-  const optNew = document.createElement('option');
-  optNew.value = LLM_INBOUND_TEST_HOST_MRU_NEW;
-  optNew.textContent = 'New host…';
-  sel.appendChild(optNew);
-  const lowStored = stored.toLowerCase();
-  const isPresetBuiltin = stored === '127.0.0.1' || lowStored === 'localhost';
-  const canon = !isPresetBuiltin ? findCanonicalInboundHostMruMatch(mru, stored) : null;
-  if (canon) {
-    sel.value = canon;
-    if (customIn) customIn.value = '';
-  } else if (!isPresetBuiltin && stored) {
-    sel.value = LLM_INBOUND_TEST_HOST_MRU_NEW;
-    if (customIn) customIn.value = stored;
+  addOpt('127.0.0.1', 'Loopback (127.0.0.1)');
+  addOpt('localhost', 'Localhost name');
+  const listedLower = new Set(['127.0.0.1', 'localhost']);
+  for (const host of mru) {
+    addOpt(host, host);
+    listedLower.add(host.toLowerCase());
+  }
+  const lowStored = storedRaw.toLowerCase();
+  const isBuiltin = storedRaw === '127.0.0.1' || lowStored === 'localhost';
+  if (!isBuiltin) {
+    const canon = findCanonicalInboundHostMruMatch(mru, storedRaw);
+    const n = normalizeLlmPassthroughTestInboundHostname(storedRaw);
+    const display = canon || n;
+    if (display && !listedLower.has(display.toLowerCase())) {
+      addOpt(display, display);
+      listedLower.add(display.toLowerCase());
+    }
+  }
+  addOpt(LLM_INBOUND_TEST_HOST_SELECT_MANAGE, '<manage>');
+
+  /** @type {string | null} */
+  let want = null;
+  if (storedRaw === '127.0.0.1') want = '127.0.0.1';
+  else if (lowStored === 'localhost') want = 'localhost';
+  else
+    want = findCanonicalInboundHostMruMatch(mru, storedRaw) || normalizeLlmPassthroughTestInboundHostname(storedRaw);
+  if (!want) want = '127.0.0.1';
+
+  let matched = false;
+  if (want === '127.0.0.1') {
+    sel.value = '127.0.0.1';
+    matched = true;
+  } else if (String(want).toLowerCase() === 'localhost') {
+    sel.value = 'localhost';
+    matched = true;
   } else {
-    sel.value = LLM_INBOUND_TEST_HOST_MRU_NEW;
-    if (customIn) customIn.value = '';
+    const wl = String(want).toLowerCase();
+    for (let i = 0; i < sel.options.length; i++) {
+      const o = sel.options[i];
+      if (o.value === LLM_INBOUND_TEST_HOST_SELECT_MANAGE) continue;
+      if (o.value.toLowerCase() === wl) {
+        sel.value = o.value;
+        matched = true;
+        break;
+      }
+    }
+  }
+  if (!matched) sel.value = '127.0.0.1';
+  sel.dataset.lastStableValue = sel.value;
+}
+
+function closeLlmInboundTestHostManageDialog() {
+  const overlay = document.getElementById('llm-inbound-hosts-modal-overlay');
+  const errEl = document.getElementById('llm-inbound-hosts-modal-error');
+  if (overlay) overlay.style.display = 'none';
+  if (errEl) {
+    errEl.style.display = 'none';
+    errEl.textContent = '';
   }
 }
 
 /**
- * Resolved custom inbound hostname from MRU select + New input (preset must be "custom").
- * @returns {string | null}
+ * @param {string} [initial]
+ * @returns {HTMLDivElement}
  */
-function resolveLlmTestInboundCustomHostnameFromInputs() {
-  const mruSel = document.getElementById('llm-passthrough-test-inbound-host-mru-select');
-  const customIn = document.getElementById('llm-passthrough-test-inbound-host-custom-input');
-  if (mruSel && mruSel.value && mruSel.value !== LLM_INBOUND_TEST_HOST_MRU_NEW) {
-    return normalizeLlmPassthroughTestInboundHostname(mruSel.value);
+function createLlmInboundHostManageRow(initial = '') {
+  const row = document.createElement('div');
+  row.className = 'llm-inbound-host-row';
+  row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px;';
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.value = initial;
+  inp.autocomplete = 'off';
+  inp.placeholder = 'e.g. myhost:11434 or [::1]:11434';
+  inp.className = 'llm-inbound-host-row-input';
+  inp.style.cssText = 'flex:1;min-width:0;padding:8px 10px;border:1px solid #ccc;border-radius:4px;font-size:14px;';
+  const rm = document.createElement('button');
+  rm.type = 'button';
+  rm.className = 'btn btn-secondary';
+  rm.textContent = 'Remove';
+  rm.addEventListener('click', () => {
+    row.remove();
+    const list = document.getElementById('llm-inbound-hosts-manage-list');
+    if (list && !list.querySelector('.llm-inbound-host-row')) {
+      list.appendChild(createLlmInboundHostManageRow(''));
+    }
+  });
+  row.appendChild(inp);
+  row.appendChild(rm);
+  return row;
+}
+
+async function commitLlmInboundTestHostManageDialog() {
+  const list = document.getElementById('llm-inbound-hosts-manage-list');
+  const errEl = document.getElementById('llm-inbound-hosts-modal-error');
+  if (!list) return;
+  if (errEl) {
+    errEl.style.display = 'none';
+    errEl.textContent = '';
   }
-  return normalizeLlmPassthroughTestInboundHostname(customIn ? customIn.value : '');
+  const inputs = list.querySelectorAll('.llm-inbound-host-row-input');
+  /** @type {string[]} */
+  const normalized = [];
+  const seen = new Set();
+  for (const inp of inputs) {
+    const el = /** @type {HTMLInputElement} */ (inp);
+    const raw = String(el.value || '').trim();
+    if (!raw) continue;
+    const n = normalizeLlmPassthroughTestInboundHostname(raw);
+    if (!n) {
+      if (errEl) {
+        errEl.style.display = 'block';
+        errEl.textContent = `Invalid host "${raw}". Use a hostname, IP, optional :port, or [IPv6]:port (no path).`;
+      }
+      return;
+    }
+    const low = n.toLowerCase();
+    if (low === '127.0.0.1' || low === 'localhost') {
+      if (errEl) {
+        errEl.style.display = 'block';
+        errEl.textContent = 'Use the main dropdown for loopback and localhost; remove those entries here.';
+      }
+      return;
+    }
+    if (seen.has(low)) continue;
+    seen.add(low);
+    normalized.push(n);
+  }
+  if (normalized.length > LLM_INBOUND_TEST_HOST_MRU_MAX) {
+    if (errEl) {
+      errEl.style.display = 'block';
+      errEl.textContent = `At most ${LLM_INBOUND_TEST_HOST_MRU_MAX} saved hosts.`;
+    }
+    return;
+  }
+  try {
+    const settings = await window.electronAPI.getSettings();
+    settings.llmPassthroughTestInboundHostMru = normalized;
+    const cur = String(settings.llmPassthroughTestInboundHostname || '').trim();
+    const curLow = cur.toLowerCase();
+    const isBuiltin = cur === '127.0.0.1' || curLow === 'localhost';
+    if (!isBuiltin) {
+      const stillThere = normalized.some((x) => x.toLowerCase() === curLow);
+      if (!stillThere) {
+        settings.llmPassthroughTestInboundHostname = '127.0.0.1';
+      }
+    }
+    await window.electronAPI.saveSettings(settings);
+    window.electronAPI.notifyTraySettingsChanged();
+    rebuildInboundTestTargetSelect(settings);
+    closeLlmInboundTestHostManageDialog();
+    void refreshLlmPassthroughPanel();
+  } catch (e) {
+    console.error('commitLlmInboundTestHostManageDialog', e);
+    if (errEl) {
+      errEl.style.display = 'block';
+      errEl.textContent = 'Could not save hosts.';
+    }
+  }
+}
+
+async function openLlmInboundTestHostManageDialog() {
+  const list = document.getElementById('llm-inbound-hosts-manage-list');
+  const overlay = document.getElementById('llm-inbound-hosts-modal-overlay');
+  if (!list || !overlay) return;
+  const errEl = document.getElementById('llm-inbound-hosts-modal-error');
+  if (errEl) {
+    errEl.style.display = 'none';
+    errEl.textContent = '';
+  }
+  list.textContent = '';
+  try {
+    const settings = await window.electronAPI.getSettings();
+    const mru = sanitizeLlmPassthroughTestInboundHostMru(settings.llmPassthroughTestInboundHostMru);
+    if (mru.length === 0) {
+      list.appendChild(createLlmInboundHostManageRow(''));
+    } else {
+      for (const h of mru) {
+        list.appendChild(createLlmInboundHostManageRow(h));
+      }
+    }
+  } catch (e) {
+    console.error('openLlmInboundTestHostManageDialog', e);
+    return;
+  }
+  overlay.style.display = 'flex';
+}
+
+let llmInboundHostManageModalBound = false;
+function setupLlmInboundTestHostManageModalOnce() {
+  if (llmInboundHostManageModalBound) return;
+  llmInboundHostManageModalBound = true;
+  const overlay = document.getElementById('llm-inbound-hosts-modal-overlay');
+  const closeBtn = document.getElementById('llm-inbound-hosts-modal-close');
+  const cancel = document.getElementById('llm-inbound-hosts-modal-cancel');
+  const save = document.getElementById('llm-inbound-hosts-modal-save');
+  const add = document.getElementById('llm-inbound-hosts-modal-add');
+  if (closeBtn) closeBtn.addEventListener('click', () => closeLlmInboundTestHostManageDialog());
+  if (cancel) cancel.addEventListener('click', () => closeLlmInboundTestHostManageDialog());
+  if (save) save.addEventListener('click', () => void commitLlmInboundTestHostManageDialog());
+  if (add) {
+    add.addEventListener('click', () => {
+      const list = document.getElementById('llm-inbound-hosts-manage-list');
+      if (list) list.appendChild(createLlmInboundHostManageRow(''));
+    });
+  }
+  if (overlay) {
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeLlmInboundTestHostManageDialog();
+    });
+  }
 }
 
 async function persistLlmTestRetrievalSettingsFromInputs() {
@@ -4226,14 +4541,16 @@ async function persistLlmTestRetrievalSettingsFromInputs() {
     const preset = document.getElementById('llm-passthrough-test-inbound-host-preset-select');
     let hostPatch = null;
     if (preset) {
-      if (preset.value === '127.0.0.1') hostPatch = '127.0.0.1';
-      else if (preset.value === 'localhost') hostPatch = 'localhost';
-      else {
-        hostPatch = resolveLlmTestInboundCustomHostnameFromInputs();
+      const v = preset.value;
+      if (v === '127.0.0.1') hostPatch = '127.0.0.1';
+      else if (v === 'localhost') hostPatch = 'localhost';
+      else if (v !== LLM_INBOUND_TEST_HOST_SELECT_MANAGE) {
+        hostPatch = normalizeLlmPassthroughTestInboundHostname(v);
       }
       if (hostPatch != null) {
         settings.llmPassthroughTestInboundHostname = hostPatch;
-        if (preset.value === 'custom') {
+        const isCustom = hostPatch !== '127.0.0.1' && String(hostPatch).toLowerCase() !== 'localhost';
+        if (isCustom) {
           recordLlmPassthroughTestInboundHostMru(settings, hostPatch);
         }
       }
@@ -4245,8 +4562,8 @@ async function persistLlmTestRetrievalSettingsFromInputs() {
     }
     await window.electronAPI.saveSettings(settings);
     window.electronAPI.notifyTraySettingsChanged();
-    if (preset && preset.value === 'custom' && hostPatch != null) {
-      refreshLlmTestInboundHostMruSelect(settings);
+    if (preset && hostPatch != null) {
+      rebuildInboundTestTargetSelect(settings);
     }
   } catch (e) {
     console.error('persistLlmTestRetrievalSettingsFromInputs', e);
@@ -4255,18 +4572,19 @@ async function persistLlmTestRetrievalSettingsFromInputs() {
 
 /**
  * @param {{ inboundPassthrough?: object } | null | undefined} status from getMCPServerStatus()
- * @param {unknown} [inboundHostname] host for the test client URL only (listener ports unchanged)
+ * @param {unknown} [inboundHostname] host for the test client URL (optional explicit :port overrides listener port)
  * @returns {{ kind: 'openai' | 'ollama', url: string } | null}
  */
 function pickInboundLlmPassthroughEndpoint(status, inboundHostname) {
-  const hostInUrl = formatHostnameForInboundTestUrl(inboundHostname);
   const p = status && status.inboundPassthrough;
   if (!p || p.masterEnabled !== true) return null;
   if (p.openai && p.openai.enabled === true && p.openai.listening === true && p.openai.port) {
-    return { kind: 'openai', url: `http://${hostInUrl}:${p.openai.port}/v1/chat/completions` };
+    const auth = inboundPassthroughTestUrlAuthority(inboundHostname, p.openai.port);
+    return { kind: 'openai', url: `http://${auth}/v1/chat/completions` };
   }
   if (p.ollama && p.ollama.enabled === true && p.ollama.listening === true && p.ollama.port) {
-    return { kind: 'ollama', url: `http://${hostInUrl}:${p.ollama.port}/api/chat` };
+    const auth = inboundPassthroughTestUrlAuthority(inboundHostname, p.ollama.port);
+    return { kind: 'ollama', url: `http://${auth}/api/chat` };
   }
   return null;
 }
@@ -4308,7 +4626,6 @@ function inboundPassthroughErrorMessage(statusCode, data) {
  */
 function resolveLlmApiPassthroughTarget(status, inboundHostname, preferredKind) {
   if (preferredKind === 'auto') return pickInboundLlmPassthroughEndpoint(status, inboundHostname);
-  const hostInUrl = formatHostnameForInboundTestUrl(inboundHostname);
   const p = status && status.inboundPassthrough;
   if (!p || p.masterEnabled !== true) return null;
   if (
@@ -4318,7 +4635,8 @@ function resolveLlmApiPassthroughTarget(status, inboundHostname, preferredKind) 
     p.openai.listening === true &&
     p.openai.port
   ) {
-    return { kind: 'openai', url: `http://${hostInUrl}:${p.openai.port}/v1/chat/completions` };
+    const auth = inboundPassthroughTestUrlAuthority(inboundHostname, p.openai.port);
+    return { kind: 'openai', url: `http://${auth}/v1/chat/completions` };
   }
   if (
     preferredKind === 'ollama' &&
@@ -4327,7 +4645,8 @@ function resolveLlmApiPassthroughTarget(status, inboundHostname, preferredKind) 
     p.ollama.listening === true &&
     p.ollama.port
   ) {
-    return { kind: 'ollama', url: `http://${hostInUrl}:${p.ollama.port}/api/chat` };
+    const auth = inboundPassthroughTestUrlAuthority(inboundHostname, p.ollama.port);
+    return { kind: 'ollama', url: `http://${auth}/api/chat` };
   }
   return null;
 }
@@ -4811,6 +5130,17 @@ function applyAllSettingsModalFieldsToSettings(settings) {
   settings.serverPort = serverPort;
   settings.autoStartServer = autoStartServer;
 
+  const mcpReqLogEnInput = document.getElementById('settings-mcp-request-logging-enabled-input');
+  const mcpReqLogDaysInput = document.getElementById('settings-mcp-request-log-retention-days-input');
+  if (mcpReqLogEnInput && mcpReqLogDaysInput) {
+    settings.mcpRequestLoggingEnabled = mcpReqLogEnInput.checked === true;
+    const rd = parseInt(mcpReqLogDaysInput.value, 10);
+    if (!Number.isFinite(rd) || rd < 1 || rd > 3650) {
+      return { ok: false, message: 'Request log retention must be between 1 and 3650 days.' };
+    }
+    settings.mcpRequestLogRetentionDays = rd;
+  }
+
   const llmEnabledInput = document.getElementById('settings-llm-passthrough-enabled-input');
   const llmProviderSelect = document.getElementById('settings-llm-passthrough-provider-select');
   const llmBaseUrlInput = document.getElementById('settings-llm-passthrough-base-url-input');
@@ -4844,34 +5174,30 @@ function applyAllSettingsModalFieldsToSettings(settings) {
     return { ok: false, message: 'LLM Passthrough timeout must be between 5 and 600 seconds.' };
   }
   const llmInboundPreset = document.getElementById('llm-passthrough-test-inbound-host-preset-select');
-  const llmInboundCustom = document.getElementById('llm-passthrough-test-inbound-host-custom-input');
-  const llmInboundMru = document.getElementById('llm-passthrough-test-inbound-host-mru-select');
   if (llmInboundPreset) {
     let inboundTestHost = '';
     if (llmInboundPreset.value === '127.0.0.1') inboundTestHost = '127.0.0.1';
     else if (llmInboundPreset.value === 'localhost') inboundTestHost = 'localhost';
-    else {
-      if (
-        llmInboundMru &&
-        llmInboundMru.value &&
-        llmInboundMru.value !== LLM_INBOUND_TEST_HOST_MRU_NEW
-      ) {
-        inboundTestHost = normalizeLlmPassthroughTestInboundHostname(llmInboundMru.value);
-      } else {
-        inboundTestHost = normalizeLlmPassthroughTestInboundHostname(
-          llmInboundCustom ? llmInboundCustom.value : ''
-        );
-      }
+    else if (llmInboundPreset.value === LLM_INBOUND_TEST_HOST_SELECT_MANAGE) {
+      return {
+        ok: false,
+        message:
+          'Pick a host in Inbound test target (or open "<manage>", save the host list, then save settings).'
+      };
+    } else {
+      inboundTestHost = normalizeLlmPassthroughTestInboundHostname(llmInboundPreset.value);
       if (!inboundTestHost) {
         return {
           ok: false,
           message:
-            'Inbound test target: choose loopback or localhost, or pick a recent custom host / enter a valid hostname or IP (no URL path).'
+            'Inbound test target: choose loopback, localhost, or a saved host (optional :port or [IPv6]:port; no URL path), or use "<manage>" to edit the list.'
         };
       }
     }
     settings.llmPassthroughTestInboundHostname = inboundTestHost;
-    if (llmInboundPreset.value === 'custom') {
+    const isCustom =
+      inboundTestHost !== '127.0.0.1' && String(inboundTestHost).toLowerCase() !== 'localhost';
+    if (isCustom) {
       recordLlmPassthroughTestInboundHostMru(settings, inboundTestHost);
     }
   }
@@ -5003,6 +5329,7 @@ async function persistSettingsModal() {
     }
 
     await refreshServerStatus();
+    void refreshServerRequestLogs();
     void refreshLlmPassthroughPanel();
     void refreshLlmApiPanel();
     return true;
