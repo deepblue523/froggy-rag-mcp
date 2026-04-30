@@ -71,7 +71,7 @@
     "publish": {
       "provider": "github",
       "owner": "froggy523",
-      "repo": "froggy-mcp-rag"
+      "repo": "froggy-on-rag"
     },
     "win": {
       "target": [
